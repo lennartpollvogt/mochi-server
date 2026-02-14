@@ -21,7 +21,7 @@
 |-------|------|-------------|
 | 0 | [Foundation](#phase-0-foundation) | A running FastAPI server with a static health endpoint |
 | 1 | [Ollama Integration](#phase-1-ollama-integration) | Server connects to Ollama, lists models, reports real connectivity |
-| 2 | [Sessions & Persistence](#phase-2-sessions--persistence) | Create, list, retrieve, and delete sessions stored as JSON files |
+| 2 | [Sessions & Persistence](#phase-2-sessions-persistence) | Create, list, retrieve, and delete sessions stored as JSON files |
 | 3 | [Non-Streaming Chat](#phase-3-non-streaming-chat) | Send a message and receive a complete response |
 | 4 | [Streaming Chat](#phase-4-streaming-chat) | Real-time SSE streaming, message editing, and re-generation |
 | 5 | [System Prompts](#phase-5-system-prompts) | Manage prompt files and apply them to sessions |

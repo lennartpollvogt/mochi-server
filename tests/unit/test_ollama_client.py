@@ -182,26 +182,35 @@ async def test_list_models_api_error(ollama_client, mock_ollama_async_client):
 @pytest.mark.asyncio
 async def test_get_model_info_success(ollama_client, mock_ollama_async_client):
     """Test getting model info successfully."""
-    mock_ollama_async_client.show.return_value = {
-        "model": "llama3:8b",
-        "size": 4661211136,
-        "details": {
-            "format": "gguf",
-            "family": "llama",
-            "parameter_size": "8.0B",
-            "quantization_level": "Q4_0",
-        },
-        "capabilities": ["completion", "tools"],
-        "modelinfo": {
-            "llama.context_length": 8192,
-        },
-    }
+    from unittest.mock import MagicMock
+
+    # Mock the list response
+    mock_model = MagicMock()
+    mock_model.model = "llama3:8b"
+    mock_model.size = 4661211136
+
+    mock_list_response = MagicMock()
+    mock_list_response.models = [mock_model]
+    mock_ollama_async_client.list.return_value = mock_list_response
+
+    # Mock the show response
+    mock_show = MagicMock()
+    mock_show.capabilities = ["completion", "tools"]
+    mock_show.modelinfo = {"llama.context_length": 8192}
+    mock_details = MagicMock()
+    mock_details.format = "gguf"
+    mock_details.family = "llama"
+    mock_details.parameter_size = "8.0B"
+    mock_details.quantization_level = "Q4_0"
+    mock_show.details = mock_details
+    mock_ollama_async_client.show.return_value = mock_show
 
     result = await ollama_client.get_model_info("llama3:8b")
 
     assert result is not None
     assert isinstance(result, ModelInfo)
     assert result.name == "llama3:8b"
+    assert result.size_mb == 4445.3
     assert result.family == "llama"
     assert result.capabilities == ["completion", "tools"]
 
@@ -209,11 +218,12 @@ async def test_get_model_info_success(ollama_client, mock_ollama_async_client):
 @pytest.mark.asyncio
 async def test_get_model_info_not_found(ollama_client, mock_ollama_async_client):
     """Test getting model info when model doesn't exist."""
-    from ollama import ResponseError
+    from unittest.mock import MagicMock
 
-    mock_ollama_async_client.show.side_effect = ResponseError(
-        "Not found", status_code=404
-    )
+    # Mock list response with no matching model
+    mock_list_response = MagicMock()
+    mock_list_response.models = []
+    mock_ollama_async_client.list.return_value = mock_list_response
 
     result = await ollama_client.get_model_info("nonexistent:model")
 
@@ -222,14 +232,11 @@ async def test_get_model_info_not_found(ollama_client, mock_ollama_async_client)
 
 @pytest.mark.asyncio
 async def test_get_model_info_api_error(ollama_client, mock_ollama_async_client):
-    """Test get_model_info when Ollama API fails with non-404 error."""
-    from ollama import ResponseError
+    """Test get_model_info when Ollama API fails."""
+    # Mock list() to fail
+    mock_ollama_async_client.list.side_effect = Exception("API error")
 
-    mock_ollama_async_client.show.side_effect = ResponseError(
-        "Server error", status_code=500
-    )
-
-    with pytest.raises(ResponseError):
+    with pytest.raises(Exception, match="API error"):
         await ollama_client.get_model_info("llama3:8b")
 
 
