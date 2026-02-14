@@ -1,5 +1,7 @@
 """Unit tests for the health check endpoint."""
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 
@@ -22,15 +24,11 @@ async def test_health_check_response_structure(async_client):
     assert response.status_code == 200
     data = response.json()
 
-    # Required fields in Phase 0
+    # Required fields
     assert "status" in data
     assert "version" in data
-
-    # Optional fields (None in Phase 0, added in Phase 1+)
     assert "ollama_connected" in data
     assert "ollama_host" in data
-    assert data["ollama_connected"] is None
-    assert data["ollama_host"] is None
 
 
 @pytest.mark.asyncio
@@ -55,3 +53,73 @@ async def test_health_check_content_type(async_client):
 
     assert response.status_code == 200
     assert "application/json" in response.headers["content-type"]
+
+
+@pytest.mark.asyncio
+async def test_health_check_with_ollama_connected(async_client, test_app):
+    """Test health check when Ollama is connected."""
+    # Mock a connected Ollama client
+    mock_client = AsyncMock()
+    mock_client.host = "http://localhost:11434"
+    mock_client.check_connection.return_value = True
+    test_app.state.ollama_client = mock_client
+
+    response = await async_client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["ollama_connected"] is True
+    assert data["ollama_host"] == "http://localhost:11434"
+
+
+@pytest.mark.asyncio
+async def test_health_check_with_ollama_disconnected(async_client, test_app):
+    """Test health check when Ollama is not reachable."""
+    # Mock a disconnected Ollama client
+    mock_client = AsyncMock()
+    mock_client.host = "http://localhost:11434"
+    mock_client.check_connection.return_value = False
+    test_app.state.ollama_client = mock_client
+
+    response = await async_client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"  # Server is still healthy
+    assert data["ollama_connected"] is False
+    assert data["ollama_host"] == "http://localhost:11434"
+
+
+@pytest.mark.asyncio
+async def test_health_check_ollama_check_exception(async_client, test_app):
+    """Test health check when Ollama connectivity check raises exception."""
+    # Mock Ollama client that raises exception
+    mock_client = AsyncMock()
+    mock_client.host = "http://localhost:11434"
+    mock_client.check_connection.side_effect = Exception("Connection error")
+    test_app.state.ollama_client = mock_client
+
+    response = await async_client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"  # Server is still healthy
+    assert data["ollama_connected"] is False  # Connection failed
+    assert data["ollama_host"] == "http://localhost:11434"
+
+
+@pytest.mark.asyncio
+async def test_health_check_no_ollama_client(async_client, test_app):
+    """Test health check when Ollama client is not initialized."""
+    # Remove the Ollama client to simulate it not being initialized
+    if hasattr(test_app.state, "ollama_client"):
+        delattr(test_app.state, "ollama_client")
+
+    response = await async_client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["ollama_connected"] is None
+    assert data["ollama_host"] is None

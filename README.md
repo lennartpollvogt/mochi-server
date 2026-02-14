@@ -6,16 +6,20 @@
 
 **mochi-server** is a headless FastAPI server that provides a REST API and SSE streaming interface for LLM conversations via Ollama. It manages persistent chat sessions, tool execution, agent orchestration, and more.
 
-## 🚀 Status: Phase 0 Complete
+## 🚀 Status: Phase 1 Complete
 
-**Phase 0: Foundation** ✅
+**Phase 0: Foundation** ✅  
+**Phase 1: Ollama Integration** ✅
 
 The server now has:
 - FastAPI application with health check endpoint
+- **Ollama client integration with async operations**
+- **Model listing and detail endpoints**
+- **Real-time Ollama connectivity checking**
 - Configuration via environment variables (pydantic-settings)
 - Complete project structure scaffolded
 - CLI entry point (`mochi-server` command)
-- Full test suite with pytest
+- Full test suite with pytest (42 tests passing)
 - Type-safe code with Pydantic models
 
 ## 📦 Installation
@@ -58,13 +62,13 @@ mochi-server --reload
 curl http://localhost:8000/api/v1/health
 ```
 
-Response:
+Response (with Ollama running):
 ```json
 {
   "status": "ok",
   "version": "0.1.0",
-  "ollama_connected": null,
-  "ollama_host": null
+  "ollama_connected": true,
+  "ollama_host": "http://localhost:11434"
 }
 ```
 
@@ -153,16 +157,18 @@ Once the server is running, visit:
 - **Interactive API docs (Swagger):** http://localhost:8000/docs
 - **Alternative API docs (ReDoc):** http://localhost:8000/redoc
 
-### Current Endpoints (Phase 0)
+### Current Endpoints (Phase 1)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/health` | Health check with version info |
+| `GET` | `/api/v1/health` | Health check with version and Ollama connectivity |
+| `GET` | `/api/v1/models` | List all available Ollama models |
+| `GET` | `/api/v1/models/{model_name}` | Get details for a specific model |
 
 ## 🗺️ Roadmap
 
 - [x] **Phase 0: Foundation** - Basic server structure
-- [ ] **Phase 1: Ollama Integration** - Connect to Ollama, list models
+- [x] **Phase 1: Ollama Integration** - Connect to Ollama, list models
 - [ ] **Phase 2: Sessions & Persistence** - Session CRUD with JSON files
 - [ ] **Phase 3: Non-Streaming Chat** - Basic chat functionality
 - [ ] **Phase 4: Streaming Chat** - SSE streaming with real-time responses
