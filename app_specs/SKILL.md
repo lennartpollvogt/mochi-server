@@ -10,7 +10,7 @@
 - **Import name:** `mochi_server`
 - **What it is:** A headless FastAPI server that wraps Ollama and provides REST + SSE APIs for LLM conversations, session persistence, tool execution, and agent orchestration.
 - **What it is NOT:** A UI application. mochi-server contains zero rendering, terminal, or frontend code.
-- **Origin:** The backend logic is extracted from [mochi-coco](https://github.com/lennartpollvogt/mochi-coco), a CLI chat application. The specification document `mochi_server_specs.md` is the single source of truth for all behavior.
+- **Specification:** The specification document `mochi_server_specs.md` is the single source of truth for all behavior.
 
 ---
 
@@ -155,7 +155,7 @@ All endpoints are under `/api/v1/`. This is non-negotiable for the first version
 
 ## 7. Session Format Compatibility
 
-**Critical:** mochi-server MUST read and write session JSON files in the exact same format as mochi-coco (format version `1.3`). This includes:
+**Critical:** mochi-server MUST read and write session JSON files in the defined format (format version `1.3`). This includes:
 
 - The `metadata` object structure with all fields (session_id, model, created_at, updated_at, message_count, summary, summary_model, format_version, tool_settings, agent_settings, context_window_config).
 - The `messages` array with role-specific fields (UserMessage, SystemMessage, SessionMessage with tool_calls, ToolMessage with tool_name).
@@ -173,7 +173,7 @@ If you change the session format, you **must** increment the format version and 
 - Tool groups are extracted from `__dunder__` variables in `__init__.py`.
 - Schema conversion uses `ollama._utils.convert_function_to_tool`. Do not reimplement this.
 - Tool execution must respect the configured `ToolExecutionPolicy`.
-- For `always_confirm` policy: the server emits a `tool_call_confirmation_required` SSE event and waits for a client HTTP callback (`POST /api/v1/chat/{session_id}/confirm-tool`). This is the server-side equivalent of mochi-coco's interactive terminal confirmation.
+- For `always_confirm` policy: the server emits a `tool_call_confirmation_required` SSE event and waits for a client HTTP callback (`POST /api/v1/chat/{session_id}/confirm-tool`).
 - Tool results are always strings (for LLM consumption).
 
 ---
@@ -226,13 +226,13 @@ If you change the session format, you **must** increment the format version and 
 
 1. **Do not put UI logic in mochi-server.** No Rich, no prompt_toolkit, no Typer (except for the `mochi-server` CLI entry point itself). No print statements for user-facing output — use `logging`.
 
-2. **Do not hardcode `Path.cwd()`.** mochi-coco uses `Path.cwd() / "chat_sessions"` everywhere. In mochi-server, all paths come from configuration.
+2. **Do not hardcode `Path.cwd()`.** All paths must come from configuration.
 
-3. **Do not use global mutable state.** mochi-coco uses module-level caches (e.g., `_planning_prompt_cache`). In mochi-server, caching should be scoped to service instances managed by FastAPI's dependency injection or lifespan.
+3. **Do not use global mutable state.** Caching should be scoped to service instances managed by FastAPI's dependency injection or lifespan.
 
 4. **Do not block the async event loop.** Ollama's sync `chat_stream()` is blocking. Wrap it in `asyncio.to_thread()` or use the async client. File I/O is fine synchronous (fast, local).
 
-5. **Do not break session format compatibility.** mochi-coco and mochi-server must be able to read each other's session files.
+5. **Do not break session format compatibility.** Maintain the defined JSON session format. If you change it, increment the format version and add migration logic.
 
 6. **Do not add authentication in v1.** Auth is out of scope for the initial version. Design routes so auth can be added as middleware later.
 
@@ -277,53 +277,41 @@ uv add --group dev some-dev-package
 
 ---
 
-## 15. Implementation Order (Recommended)
+## 15. Evolution Plan
 
-When building mochi-server from scratch, follow this order:
+mochi-server is built incrementally through a series of **evolution phases**, each producing a working, testable application. The full plan is defined in **`mochi_server_evolution_steps.md`** — that document is the authoritative guide for implementation order and scope.
 
-1. **Project scaffolding** — `pyproject.toml`, directory structure, `__init__.py` files, config, app factory.
-2. **Health endpoint** — `/api/v1/health` with Ollama connectivity check.
-3. **Ollama client layer** — Port `OllamaClient`, `AsyncOllamaClient`, `AsyncInstructorOllamaClient`.
-4. **Models endpoint** — `/api/v1/models` using the Ollama client.
-5. **Session layer** — Port `ChatSession`, message types, `SessionMetadata` with migration logic.
-6. **Session endpoints** — CRUD: `/api/v1/sessions/*`.
-7. **Chat endpoint (non-streaming)** — `/api/v1/chat/{session_id}` with basic message flow.
-8. **Chat endpoint (streaming)** — `/api/v1/chat/{session_id}/stream` with SSE.
-9. **Context window service** — Port `DynamicContextWindowService`, integrate with chat flow.
-10. **System prompt service & endpoints** — `/api/v1/system-prompts/*`.
-11. **Tool discovery & endpoints** — `/api/v1/tools/*`.
-12. **Tool execution in chat** — Handle `tool_calls` in streaming response, execute tools, continue conversation.
-13. **Tool confirmation flow** — `tool_call_confirmation_required` event + `/confirm-tool` callback.
-14. **Agent discovery & endpoints** — `/api/v1/agents/*`.
-15. **Agent execution** — Two-phase loop, agent tool factory, agent chat sessions.
-16. **Summarization service** — Background summary generation after chat responses.
-17. **Status endpoint** — `/api/v1/sessions/{session_id}/status`.
-18. **Integration tests** — Full flow tests with mocked Ollama.
+### Summary of Phases
 
-Each step should be fully tested before moving to the next.
+| Phase | Name | What You Get |
+|-------|------|-------------|
+| 0 | Foundation | Running FastAPI server with a static health endpoint |
+| 1 | Ollama Integration | Server connects to Ollama, lists models, reports real connectivity |
+| 2 | Sessions & Persistence | Create, list, retrieve, and delete sessions stored as JSON files |
+| 3 | Non-Streaming Chat | Send a message and receive a complete response |
+| 4 | Streaming Chat | Real-time SSE streaming, message editing, and re-generation |
+| 5 | System Prompts | Manage prompt files and apply them to sessions |
+| 6 | Context Window Management | Dynamic context window sizing and session status |
+| 7 | Tool System | Discover, execute, and confirm tools during chat |
+| 8 | Agent System | Two-phase agent orchestration with dedicated sessions |
+| 9 | Summarization | Background conversation summaries after each response |
+
+### Rules
+
+- **Follow the phases in order.** Each phase builds on the previous one.
+- **Complete all tests** for a phase before moving to the next.
+- **Review & refactor** after each phase — update `mochi_server_specs.md` if the implementation revealed spec issues.
+- **Never skip ahead.** If a later phase depends on earlier work, that earlier work must be solid first.
+- When starting a new phase, read its section in `mochi_server_evolution_steps.md` in full before writing code.
 
 ---
 
 ## 16. When You Are Unsure
 
 - **Check the spec first** (`mochi_server_specs.md`).
-- **Check mochi-coco's implementation** (in `src/mochi_coco/`) for reference on how the logic works today.
 - **Ask the user** if the spec is ambiguous or contradictory.
 - **Never invent API behavior** that is not in the spec. If you think something is missing, flag it.
 
 ---
 
-## 17. Key Differences from mochi-coco to Keep in Mind
 
-| Aspect | mochi-coco | mochi-server |
-|---|---|---|
-| Tool confirmation | Synchronous terminal prompt | Async SSE event + HTTP callback |
-| Streaming | Rich console live rendering | SSE events |
-| Session creation | Multi-step wizard with menus | Single POST request |
-| Background tasks | asyncio.Task in thread pool | FastAPI BackgroundTasks |
-| Path resolution | `Path.cwd()` hardcoded | Configurable via settings |
-| State | In-memory on ChatController | Stateless — all in JSON files |
-| Rendering | Markdown via Rich | None — raw content sent to client |
-| User input | prompt_toolkit | HTTP request bodies |
-
-These differences affect how you port code. Do not copy-paste from mochi-coco without adapting for the server context.

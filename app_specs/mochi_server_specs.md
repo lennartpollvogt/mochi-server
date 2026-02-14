@@ -2,7 +2,7 @@
 
 > **Version:** 0.1.0-draft
 > **Status:** Initial Specification
-> **Author:** Derived from mochi-coco v0.6.1 architecture analysis
+> **Author:** Lennart Pollvogt
 
 ---
 
@@ -28,13 +28,11 @@
 18. [Streaming & Real-Time Communication](#18-streaming--real-time-communication)
 19. [Error Handling](#19-error-handling)
 20. [Testing Strategy](#20-testing-strategy)
-21. [Migration Path from mochi-coco](#21-migration-path-from-mochi-coco)
-
 ---
 
 ## 1. Overview
 
-**mochi-server** is a Python FastAPI application that encapsulates all non-UI backend logic currently embedded in **mochi-coco**. It acts as a headless server that connects to an Ollama instance and exposes RESTful (and streaming) APIs for:
+**mochi-server** is a Python FastAPI application that acts as a headless server connecting to an Ollama instance and exposes RESTful (and streaming) APIs for:
 
 - Conversing with LLMs (streaming and non-streaming)
 - Managing persistent chat sessions
@@ -57,7 +55,7 @@ Any frontend — CLI, web UI, desktop app, or another service — can consume mo
 - **Headless backend:** All business logic runs behind HTTP APIs. Zero UI code.
 - **PyPI package:** Installable via `pip install mochi-server` (or `uv add mochi-server`).
 - **Importable library:** Core modules can be imported directly in Python code without running the server (e.g., `from mochi_server.sessions import SessionManager`).
-- **Full feature parity** with mochi-coco's backend logic (sessions, tools, agents, summarization, context window management, system prompts).
+- **Complete feature set:** Sessions, tools, agents, summarization, context window management, and system prompts.
 - **Streaming support:** Server-Sent Events (SSE) for real-time chat streaming.
 - **Stateless API design:** The server itself is stateless; all state lives in session JSON files and configuration. This makes horizontal scaling trivial in the future.
 - **Extensible tool & agent system:** Users drop Python files into designated directories, and the server discovers them automatically.
@@ -67,7 +65,7 @@ Any frontend — CLI, web UI, desktop app, or another service — can consume mo
 - **No UI:** mochi-server does not render markdown, display menus, or handle terminal I/O.
 - **No Ollama management:** mochi-server does not start, stop, or manage the Ollama process.
 - **No authentication (v1):** The first version runs locally without auth. Auth can be added later as middleware.
-- **No database:** Session persistence uses JSON files on disk (same as mochi-coco). A database backend can be added later behind an abstraction.
+- **No database:** Session persistence uses JSON files on disk. A database backend can be added later behind an abstraction.
 
 ---
 
@@ -293,7 +291,7 @@ dev = [
 
 ### 5.3 Python Version
 
-Minimum **Python 3.10** (consistent with mochi-coco).
+Minimum **Python 3.10**.
 
 ---
 
@@ -411,7 +409,7 @@ async def list_sessions(manager: SessionManager = Depends(get_session_manager)):
 
 ### 8.1 Message Types
 
-Carried over from mochi-coco's `ChatSession`:
+mochi-server uses the following message types:
 
 | Type | Role | Fields |
 |---|---|---|
@@ -1091,7 +1089,7 @@ Client                          mochi-server
 
 ### 11.1 Client Types
 
-mochi-server maintains three Ollama client types, carried over from mochi-coco:
+mochi-server maintains three Ollama client types:
 
 | Client | Use Case | Library |
 |---|---|---|
@@ -1134,7 +1132,7 @@ Sessions are stored as JSON files in the configured `sessions_dir`:
 {sessions_dir}/{session_id}.json
 ```
 
-The JSON schema matches mochi-coco's format:
+The JSON schema is as follows:
 ```json
 {
   "metadata": {
@@ -1417,7 +1415,7 @@ Some models don't support structured output (listed in `constants.SUMMARY_UNSUPP
 
 ### 16.5 Background Execution in mochi-server
 
-In mochi-server, summarization runs as a **FastAPI background task** after each successful assistant response is saved. This replaces mochi-coco's `asyncio`-based background monitoring loop.
+Summarization runs as a **FastAPI background task** after each successful assistant response is saved.
 
 ```python
 from fastapi import BackgroundTasks
@@ -1591,82 +1589,6 @@ def mock_async_instructor_client():
     )
     return client
 ```
-
----
-
-## 21. Migration Path from mochi-coco
-
-### 21.1 What Moves to mochi-server
-
-The following modules from `mochi-coco/src/mochi_coco/` are extracted into mochi-server with UI dependencies removed:
-
-| mochi-coco Module | mochi-server Module | Changes |
-|---|---|---|
-| `ollama/client.py` | `ollama/client.py` | No changes — direct port |
-| `ollama/async_client.py` | `ollama/async_client.py` | No changes — direct port |
-| `chat/session.py` | `sessions/session.py` | Remove `Path.cwd()` default; accept `sessions_dir` from config |
-| `tools/config.py` | `tools/config.py` | No changes — direct port |
-| `tools/discovery_service.py` | `tools/discovery.py` | Accept `tools_dir` from config instead of hardcoded `"./tools"` |
-| `tools/schema_service.py` | `tools/schema.py` | No changes — direct port |
-| `tools/execution_service.py` | `tools/execution.py` | Remove UI confirmation callback; replace with async confirmation via API |
-| `agents/config.py` | `agents/config.py` | No changes — direct port |
-| `agents/discovery_service.py` | `agents/discovery.py` | Accept `agents_dir` from config |
-| `agents/execution_service.py` | `agents/execution.py` | Remove UI confirmation; use API-based confirmation. Emit SSE events during execution. |
-| `agents/agent_tool.py` | `agents/tool_factory.py` | No changes — direct port |
-| `agents/prompt_loader.py` | `agents/prompt_loader.py` | Accept prompt paths from config |
-| `services/context_window_service.py` | `services/context_window.py` | No changes — direct port |
-| `services/summarization_service.py` | `services/summarization.py` | Replace `asyncio` monitoring loop with FastAPI `BackgroundTasks` trigger |
-| `services/summary_model_manager.py` | `services/summary_model.py` | Remove UI prompting; expose model validation via API |
-| `services/system_prompt_service.py` | `services/system_prompts.py` | Accept `system_prompts_dir` from config |
-| `constants/__init__.py` | `constants.py` | No changes — direct port |
-
-### 21.2 What Stays in mochi-coco (or a Future CLI Client)
-
-These modules are **UI-specific** and do NOT move to mochi-server:
-
-- `cli.py` — Typer CLI entry point
-- `chat_controller.py` — Orchestrates the interactive CLI loop
-- `user_prompt.py` — prompt_toolkit input handling
-- `rendering/` — All markdown rendering, Rich console, themes
-- `ui/` — All menu handlers, selection UIs, confirmation UIs
-- `commands/command_processor.py` — `/menu`, `/edit`, `/chats` command handling
-- `controllers/` — CLI-specific controllers
-- `services/renderer_manager.py` — Rendering mode management
-- `services/session_manager.py` — CLI session initialization flow
-- `services/session_creation_service.py` — CLI session creation wizard
-- `services/session_creation_types.py` — CLI-specific creation context enums
-- `services/user_preference_service.py` — CLI preference collection
-- `services/session_setup_helper.py` — CLI session setup orchestration
-- `services/background_service_manager.py` — CLI asyncio background task management
-
-### 21.3 Key Architectural Differences
-
-| Concern | mochi-coco (CLI) | mochi-server (API) |
-|---|---|---|
-| **Tool confirmation** | Interactive terminal prompt via `ToolConfirmationUI` | SSE event + HTTP callback (`/confirm-tool`) |
-| **Streaming output** | Rich console `Live` rendering | SSE events to client |
-| **Session creation** | Multi-step interactive wizard | Single `POST /sessions` request |
-| **Model selection** | Interactive menu with table display | `GET /models` → client picks → `POST /sessions` |
-| **Background summarization** | `asyncio.Task` in event loop thread | FastAPI `BackgroundTasks` after response |
-| **Configuration** | Hardcoded paths (`./chat_sessions`, `./tools`, etc.) | Configurable via `pydantic-settings` + env vars |
-| **State management** | In-memory instance attributes on `ChatController` | Stateless — all state in session JSON files |
-
-### 21.4 Session Format Compatibility
-
-mochi-server uses the **exact same JSON session format** as mochi-coco (format version `1.3`). This means:
-- Sessions created by mochi-coco can be read by mochi-server and vice versa.
-- The migration path is seamless — point mochi-server's `sessions_dir` at mochi-coco's `chat_sessions/` folder.
-- Agent chat sessions in `agents/agent_chats/` are also fully compatible.
-
-### 21.5 Future: mochi-coco as a Thin Client
-
-Once mochi-server is complete, mochi-coco can be refactored to be a thin CLI client that:
-1. Calls mochi-server's REST API for all operations.
-2. Consumes SSE streams for real-time chat rendering.
-3. Handles only terminal UI concerns (rendering, menus, input).
-4. Removes all direct Ollama and session management code.
-
-This creates a clean separation: **mochi-server** owns all business logic, and **mochi-coco** (or any other client) owns the presentation layer.
 
 ---
 
