@@ -3,6 +3,7 @@
 > **Version:** 0.1.0-draft
 > **Status:** Initial Specification
 > **Author:** Lennart Pollvogt
+> **Python:** ≥ 3.11
 
 ---
 
@@ -63,7 +64,7 @@ Any frontend — CLI, web UI, desktop app, or another service — can consume mo
 ### 2.2 Non-Goals
 
 - **No UI:** mochi-server does not render markdown, display menus, or handle terminal I/O.
-- **No Ollama management:** mochi-server does not start, stop, or manage the Ollama process.
+- **No Ollama management:** mochi-server does not start, stop, or manage the Ollama server.
 - **No authentication (v1):** The first version runs locally without auth. Auth can be added later as middleware.
 - **No database:** Session persistence uses JSON files on disk. A database backend can be added later behind an abstraction.
 
@@ -109,15 +110,20 @@ mochi-server --data-dir /path/to/data
 ```python
 from mochi_server import create_app
 
-app = create_app(
-    ollama_host="http://localhost:11434",
-    data_dir="./my_data",
-)
+# Option 1: default settings (reads from MOCHI_* env vars)
+app = create_app()
+
+# Option 2: explicit settings object
+from mochi_server.config import MochiServerSettings
+settings = MochiServerSettings(ollama_host="http://custom:11434", data_dir="./my_data")
+app = create_app(settings=settings)
 
 # Run with uvicorn
 import uvicorn
 uvicorn.run(app, host="0.0.0.0", port=8000)
 ```
+
+`create_app()` accepts an optional `MochiServerSettings` instance. If not provided, settings are loaded from environment variables automatically (pydantic-settings default behavior). Environment variables always have the highest priority.
 
 Or import individual modules:
 
@@ -127,7 +133,7 @@ from mochi_server.ollama import OllamaClient
 from mochi_server.tools import ToolDiscoveryService
 
 client = OllamaClient(host="http://localhost:11434")
-models = client.list_models()
+models = await client.list_models()
 ```
 
 ---
@@ -166,8 +172,8 @@ mochi-server/
 │       │
 │       ├── ollama/                  # Ollama client layer
 │       │   ├── __init__.py
-│       │   ├── client.py            # Sync OllamaClient
-│       │   ├── async_client.py      # AsyncOllamaClient + AsyncInstructorOllamaClient
+│       │   ├── client.py            # OllamaClient (async, wraps ollama.AsyncClient)
+│       │   ├── instructor_client.py # AsyncInstructorOllamaClient (structured output)
 │       │   └── types.py             # ModelInfo, ChatMessage dataclasses
 │       │
 │       ├── sessions/                # Session management
@@ -261,7 +267,7 @@ readme = "README.md"
 authors = [
     { name = "Lennart Pollvogt", email = "lennartpollvogt@protonmail.com" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
@@ -291,7 +297,7 @@ dev = [
 
 ### 5.3 Python Version
 
-Minimum **Python 3.10**.
+Minimum **Python 3.11**.
 
 ---
 
@@ -326,16 +332,53 @@ class MochiServerSettings(BaseSettings):
 
     # Summarization
     summarization_enabled: bool = True
-    summarization_interval_seconds: int = 3
 
     # Context window
     dynamic_context_window_enabled: bool = True
 
+    # CORS
+    cors_origins: list[str] = ["*"]   # Allowed origins for CORS
+
     # Logging
     log_level: str = "INFO"
 
+    # Agent execution
+    max_agent_iterations: int = 50    # Maximum iterations for agent two-phase loop
+
     model_config = {"env_prefix": "MOCHI_"}
+
+    # --- Resolved paths (computed from data_dir + relative dirs) ---
+
+    @property
+    def resolved_sessions_dir(self) -> Path:
+        return Path(self.data_dir) / self.sessions_dir
+
+    @property
+    def resolved_tools_dir(self) -> Path:
+        return Path(self.data_dir) / self.tools_dir
+
+    @property
+    def resolved_agents_dir(self) -> Path:
+        return Path(self.data_dir) / self.agents_dir
+
+    @property
+    def resolved_agent_chats_dir(self) -> Path:
+        return Path(self.data_dir) / self.agent_chats_dir
+
+    @property
+    def resolved_system_prompts_dir(self) -> Path:
+        return Path(self.data_dir) / self.system_prompts_dir
+
+    @property
+    def resolved_planning_prompt_path(self) -> Path:
+        return Path(self.data_dir) / self.planning_prompt_path
+
+    @property
+    def resolved_execution_prompt_path(self) -> Path:
+        return Path(self.data_dir) / self.execution_prompt_path
 ```
+
+All relative directory settings (e.g., `sessions_dir`, `tools_dir`) are resolved against `data_dir` using computed `resolved_*` properties. Code should always use the resolved properties (e.g., `settings.resolved_sessions_dir`) rather than constructing paths manually.
 
 ### 6.2 Environment Variables
 
@@ -378,22 +421,40 @@ export MOCHI_LOG_LEVEL=DEBUG
 |---|---|
 | **Routers** | HTTP request/response handling, validation, SSE streaming |
 | **Services** | Business logic, orchestration, state management |
-| **Ollama Client** | Communication with Ollama API (sync + async) |
+| **Ollama Client** | Communication with Ollama API (async only) |
 | **Sessions** | Chat session CRUD, message management, persistence |
 | **Tools** | Discovery, schema conversion, execution |
 | **Agents** | Discovery, two-phase execution, agent session management |
 | **Models (Pydantic)** | Request/response validation, serialization |
 | **Config** | Application configuration via env vars / settings |
 
-### 7.2 Dependency Injection
+### 7.2 Dependency Injection & Lifespan
 
-FastAPI's dependency injection system is used to provide services to route handlers:
+FastAPI's **lifespan** context is used to create expensive objects once at startup and reuse them for every request. Lightweight objects can be created per-request.
+
+**Created once at startup (singleton via lifespan):**
+- `OllamaClient` — holds a network connection to Ollama
+- `AsyncInstructorOllamaClient` — holds a connection for structured output
+- `ToolDiscoveryService` — scans filesystem for tools
+- `AgentDiscoveryService` — scans filesystem for agents
+
+**Created per-request (lightweight):**
+- `SessionManager` — just holds a path reference, very cheap to create
 
 ```python
-from fastapi import Depends
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, Request
 
-def get_ollama_client(settings = Depends(get_settings)) -> OllamaClient:
-    return OllamaClient(host=settings.ollama_host)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    app.state.ollama_client = OllamaClient(host=settings.ollama_host)
+    app.state.tool_discovery = ToolDiscoveryService(tools_dir=settings.resolved_tools_dir)
+    yield
+    # cleanup if needed
+
+def get_ollama_client(request: Request) -> OllamaClient:
+    return request.app.state.ollama_client
 
 def get_session_manager(settings = Depends(get_settings)) -> SessionManager:
     return SessionManager(sessions_dir=settings.resolved_sessions_dir)
@@ -441,7 +502,6 @@ class SessionMetadata:
 class ToolExecutionPolicy(str, Enum):
     ALWAYS_CONFIRM = "always_confirm"
     NEVER_CONFIRM = "never_confirm"
-    CONFIRM_DESTRUCTIVE = "confirm_destructive"
 
 class ToolSettings:
     tools: list[str]                          # Individual tool names
@@ -449,12 +509,13 @@ class ToolSettings:
     execution_policy: ToolExecutionPolicy
 ```
 
+**`tools` and `tool_group` interaction:** When both `tools` and `tool_group` are provided, the final set of tools exposed to the LLM is the **union** of individually named tools and all tools in the group, **deduplicated**. A `PATCH` request to update tool_settings fully replaces the previous tool_settings.
+
 ### 8.4 Agent Settings
 
 ```python
 class AgentSettings:
     enabled_agents: list[str]
-    selection_metadata: dict | None
 ```
 
 ### 8.5 Agent Definition
@@ -468,6 +529,49 @@ class AgentDefinition:
     tools: dict[str, Callable]
     valid: bool
     error_message: str | None
+```
+
+### 8.6 Tool Call Format (from Ollama)
+
+When streaming, Ollama returns tool calls as objects on `chunk.message.tool_calls`. Each tool call has the following structure:
+
+```python
+# From ollama._types — each tool call object:
+tool_call.function.name        # str — the tool function name
+tool_call.function.arguments   # dict — the arguments to pass
+```
+
+During streaming, tool calls arrive incrementally — `chunk.message.tool_calls` may contain one or more `ToolCall` objects per chunk. They must be accumulated across all chunks:
+
+```python
+tool_calls = []
+for chunk in stream:
+    if chunk.message.tool_calls:
+        tool_calls.extend(chunk.message.tool_calls)
+```
+
+When saving an assistant message that contains tool calls to the session, the `tool_calls` are stored as a list of dicts in Ollama's format:
+
+```json
+{
+  "role": "assistant",
+  "content": "",
+  "tool_calls": [
+    {
+      "function": {
+        "name": "get_weather",
+        "arguments": {"city": "London"}
+      }
+    }
+  ]
+}
+```
+
+When sending messages back to Ollama (including tool results), the assistant message with `tool_calls` must be included in the history, followed by `tool` role messages with results:
+
+```json
+{"role": "assistant", "content": "", "tool_calls": [...]},
+{"role": "tool", "tool_name": "get_weather", "content": "15°C"},
 ```
 
 ---
@@ -529,7 +633,7 @@ All endpoints are prefixed with `/api/v1`.
 | `POST` | `/api/v1/sessions` | Create a new session |
 | `GET` | `/api/v1/sessions/{session_id}` | Get session details + full message history |
 | `DELETE` | `/api/v1/sessions/{session_id}` | Delete a session |
-| `PATCH` | `/api/v1/sessions/{session_id}` | Update session metadata (model, tool_settings, agent_settings) |
+| `PATCH` | `/api/v1/sessions/{session_id}` | Update session metadata (partial update) |
 | `GET` | `/api/v1/sessions/{session_id}/messages` | Get messages for a session |
 | `PUT` | `/api/v1/sessions/{session_id}/messages/{message_index}` | Edit a message and truncate subsequent messages |
 | `PUT` | `/api/v1/sessions/{session_id}/system-prompt` | Set or update system prompt for a session |
@@ -592,6 +696,70 @@ All endpoints are prefixed with `/api/v1`.
 }
 ```
 
+**PATCH /api/v1/sessions/{session_id} — Request:**
+
+All fields are optional. Only provided fields are updated.
+
+```json
+{
+  "model": "llama3:8b",
+  "tool_settings": {
+    "tools": ["add_numbers"],
+    "tool_group": null,
+    "execution_policy": "never_confirm"
+  },
+  "agent_settings": {
+    "enabled_agents": ["coder"]
+  }
+}
+```
+
+When `model` is provided, the server validates it exists by querying the Ollama API. If the model is not found, a `MODEL_NOT_FOUND` error is returned.
+
+**PATCH /api/v1/sessions/{session_id} — Response:**
+
+Returns the full updated session metadata (same shape as `POST /sessions` response):
+
+```json
+{
+  "session_id": "a1b2c3d4e5",
+  "model": "llama3:8b",
+  "created_at": "2025-01-15T10:30:00.000000",
+  "updated_at": "2025-01-15T11:00:00.000000",
+  "message_count": 6,
+  "tool_settings": { "..." },
+  "agent_settings": { "..." }
+}
+```
+
+**PUT /api/v1/sessions/{session_id}/system-prompt — Request:**
+
+One of `source_file` or `content` must be provided. If `source_file` is given, the server reads the file from `system_prompts_dir` and uses its content. If both are given, `source_file` takes precedence.
+
+```json
+{
+  "source_file": "coder.md"
+}
+```
+
+Or with direct content:
+
+```json
+{
+  "content": "You are a helpful coding assistant."
+}
+```
+
+**PUT /api/v1/sessions/{session_id}/system-prompt — Response:**
+
+```json
+{
+  "content": "You are a helpful coding assistant.",
+  "source_file": "coder.md",
+  "message_index": 0
+}
+```
+
 ---
 
 ### 9.4 Chat
@@ -601,7 +769,9 @@ All endpoints are prefixed with `/api/v1`.
 | `POST` | `/api/v1/chat/{session_id}` | Send a message and get a non-streaming response |
 | `POST` | `/api/v1/chat/{session_id}/stream` | Send a message and get a streaming SSE response |
 
-**POST /api/v1/chat/{session_id} — Request:**
+Both endpoints accept the same request body. The non-streaming endpoint internally uses async streaming from Ollama and collects the full response before returning.
+
+**Request (both endpoints):**
 ```json
 {
   "message": "What is the capital of France?",
@@ -609,7 +779,13 @@ All endpoints are prefixed with `/api/v1`.
 }
 ```
 
+- `message` (`str | None`, optional): The user message to send. If `null` or omitted, the server re-generates a response from the existing last user message in the session history. This is used after editing a message via `PUT /sessions/{id}/messages/{index}`.
+- `think` (`bool`, optional, default `false`): Whether to request thinking/reasoning from the model (if supported).
+
 **POST /api/v1/chat/{session_id} — Response (non-streaming):**
+
+The non-streaming endpoint collects the full streamed response from Ollama before returning. Tool calls are handled in the same way as the streaming endpoint — the server executes the full tool loop internally before returning the final response.
+
 ```json
 {
   "session_id": "a1b2c3d4e5",
@@ -709,7 +885,7 @@ The client must then call:
 }
 ```
 
-If the client does not respond within a configurable timeout, the tool call is denied.
+The stream remains open and waits until the client responds. There is no server-side timeout — the client is responsible for responding. If the client disconnects without responding, the tool call is treated as denied and the partial response is saved.
 
 For the `never_confirm` policy, tools execute immediately and `tool_call` + `tool_result` events are emitted without waiting.
 
@@ -750,7 +926,7 @@ For the `never_confirm` policy, tools execute immediately and `tool_call` + `too
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/v1/agents` | List all discovered agents |
-| `GET` | `/api/v1/agents/{agent_name}` | Get details for a specific agent |
+| `GET` | `/api/v1/agents/agent/{agent_name}` | Get details for a specific agent |
 | `POST` | `/api/v1/agents/reload` | Force reload agents from disk |
 | `GET` | `/api/v1/agents/chats` | List all agent chat sessions |
 | `GET` | `/api/v1/agents/chats/{session_id}` | Get an agent chat session |
@@ -785,7 +961,7 @@ For the `never_confirm` policy, tools execute immediately and `tool_call` + `too
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/system-prompts` | List all available system prompt files |
+| `GET` | `/api/v1/system-prompts` | List all available system prompt files (`.md` only) |
 | `GET` | `/api/v1/system-prompts/{filename}` | Get content of a specific system prompt |
 | `POST` | `/api/v1/system-prompts` | Create a new system prompt file |
 | `PUT` | `/api/v1/system-prompts/{filename}` | Update an existing system prompt file |
@@ -838,6 +1014,8 @@ For the `never_confirm` policy, tools execute immediately and `tool_call` + `too
   "summary_model": "qwen3:14b"
 }
 ```
+
+**`system_prompt_file` derivation:** This value is read from the `source_file` field of the first message in the session's message array (if that message has role `"system"`). If there is no system message, or the system message has no `source_file`, this field is `null`.
 
 ---
 
@@ -1027,8 +1205,8 @@ Client                          mochi-server                       Ollama
   │  ◄──── 200 OK                   │  3. Save session               │
   │                                  │                                │
   │  POST /chat/{id}/stream          │                                │
-  │  (empty - re-generates from     │                                │
-  │   last user message)            │                                │
+  │  {message: null}                │  (re-generates from last       │
+  │                                  │   user message in history)     │
   │ ────────────────────────────────►│                                │
   │                                  │  chat_stream()                 │
   │                                  │ ──────────────────────────────►│
@@ -1087,27 +1265,27 @@ Client                          mochi-server
 
 ## 11. Ollama Integration Layer
 
-### 11.1 Client Types
+### 11.1 Client Architecture
 
-mochi-server maintains three Ollama client types:
+mochi-server uses **only async clients** for all Ollama communication. All chat interactions use **streaming** (`stream=True`). There is no sync client.
 
 | Client | Use Case | Library |
 |---|---|---|
-| `OllamaClient` (sync) | Streaming chat, model listing, model details | `ollama.Client` |
-| `AsyncOllamaClient` | Async operations, background tasks | `ollama.AsyncClient` |
+| `OllamaClient` | Streaming chat, model listing, model details | `ollama.AsyncClient` |
 | `AsyncInstructorOllamaClient` | Structured output (summaries) | `ollama_instructor.OllamaInstructorAsync` |
 
 ### 11.2 Key Operations
 
 | Operation | Client | Method |
 |---|---|---|
-| List models (completion-capable only) | Sync | `list_models() -> list[ModelInfo]` |
-| Show model details | Sync | `show_model_details(name) -> ShowResponse` |
-| Streaming chat | Sync | `chat_stream(model, messages, tools?, think?, context_window?) -> Iterator[ChatResponse]` |
-| Non-streaming chat | Sync | `chat(model, messages, tools?, think?, context_window?) -> ChatResponse` |
-| Async streaming chat | Async | `chat_stream(...) -> AsyncIterator[ChatResponse]` |
-| Async non-streaming chat | Async | `chat(...) -> ChatResponse` |
-| Structured response | Instructor | `structured_response(model, messages, format) -> ChatResponse` |
+| List models (completion-capable only) | `OllamaClient` | `async list_models() -> list[ModelInfo]` |
+| Show model details | `OllamaClient` | `async show_model_details(name) -> ShowResponse` |
+| Check connectivity | `OllamaClient` | `async check_connection() -> bool` |
+| Streaming chat | `OllamaClient` | `async chat_stream(model, messages, tools?, think?, context_window?) -> AsyncIterator[ChatResponse]` |
+
+All chat responses are consumed as async iterators. The non-streaming HTTP endpoint (`POST /chat/{session_id}`) internally calls `chat_stream()` and collects the full response before returning.
+
+The `AsyncInstructorOllamaClient` is used only for structured output (summarization). It is not used for chat.
 
 ### 11.3 Model Filtering
 
@@ -1145,7 +1323,7 @@ The JSON schema is as follows:
     "summary_model": "qwen3:14b",
     "format_version": "1.3",
     "tool_settings": {"tools": [], "tool_group": null, "execution_policy": "always_confirm"},
-    "agent_settings": {"enabled_agents": [], "selection_metadata": null},
+    "agent_settings": {"enabled_agents": []},
     "context_window_config": {
       "dynamic_enabled": true,
       "current_window": 8192,
@@ -1241,7 +1419,7 @@ __utilities__ = ["get_current_time", "flip_coin"]
 ### 13.7 Tool Execution Service
 
 - Executes tool functions with the provided arguments
-- Respects execution policy (always_confirm, never_confirm, confirm_destructive)
+- Respects execution policy (always_confirm, never_confirm)
 - Returns `ToolExecutionResult(success, result, error_message, execution_time, tool_name)`
 - Maintains execution history (last 100 executions)
 - Provides execution statistics
@@ -1340,6 +1518,7 @@ Returns:
 3. If tool calls → execute, save, loop.
 4. If no tool calls on first iteration → save response, loop again (handles LLMs that "announce" before acting).
 5. If no tool calls on subsequent iterations → agent is done, break.
+6. **Maximum iterations:** The execution loop is capped at `max_agent_iterations` (default: **50**, configurable via `MOCHI_MAX_AGENT_ITERATIONS`). If the limit is reached, the agent stops and returns whatever output has been produced so far, along with a warning that the iteration limit was hit.
 
 **Output:** Plain text starting with `Session ID: {id}`, followed by all agent messages, tool calls, and tool results since the instruction.
 
@@ -1432,13 +1611,13 @@ async def chat_stream(session_id: str, ..., background_tasks: BackgroundTasks):
 
 ### 17.1 Overview
 
-System prompts are `.md` or `.txt` files stored in the configured `system_prompts_dir`.
+System prompts are `.md` files stored in the configured `system_prompts_dir`.
 
 ### 17.2 Operations
 
 | Operation | Description |
 |---|---|
-| **List** | Scan directory for `.md`/`.txt` files, return filename + preview + word count |
+| **List** | Scan directory for `.md` files, return filename + preview + word count |
 | **Read** | Return full content of a prompt file |
 | **Create** | Write a new prompt file |
 | **Update** | Overwrite an existing prompt file |
@@ -1517,7 +1696,6 @@ All error responses follow a consistent format:
 | `OLLAMA_ERROR` | 502 | Ollama returned an error |
 | `TOOL_EXECUTION_FAILED` | 500 | Tool execution raised an exception |
 | `TOOL_EXECUTION_DENIED` | 403 | User denied tool execution |
-| `TOOL_CONFIRMATION_TIMEOUT` | 408 | Tool confirmation timed out |
 | `INVALID_MESSAGE_INDEX` | 400 | Message index out of range or not a user message |
 | `VALIDATION_ERROR` | 422 | Request body validation failed |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
@@ -1564,18 +1742,23 @@ def test_settings(tmp_path):
 
 ### 20.4 Mocking Ollama
 
-For unit and integration tests, Ollama is mocked at the client level:
+For unit and integration tests, Ollama is mocked at the client level. Since `OllamaClient` is fully async, use `AsyncMock` and async iterators:
 
 ```python
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock
+
+async def _async_stream(chunks):
+    """Helper to create an async iterator from a list of chunks."""
+    for chunk in chunks:
+        yield chunk
 
 @pytest.fixture
 def mock_ollama_client():
-    client = MagicMock(spec=OllamaClient)
+    client = AsyncMock(spec=OllamaClient)
     client.list_models.return_value = [
         ModelInfo(name="test-model", size_mb=1000.0, capabilities=["completion", "tools"], context_length=8192)
     ]
-    client.chat_stream.return_value = iter([
+    client.chat_stream.return_value = _async_stream([
         ChatResponse(message=Message(role="assistant", content="Hello!"), done=False),
         ChatResponse(message=Message(role="assistant", content=""), done=True, eval_count=10, prompt_eval_count=20),
     ])
@@ -1630,6 +1813,7 @@ def mock_async_instructor_client():
 | `MOCHI_PLANNING_PROMPT_PATH` | `docs/agents/agent_prompt_planning.md` | Planning prompt file |
 | `MOCHI_EXECUTION_PROMPT_PATH` | `docs/agents/agent_prompt_execution.md` | Execution prompt file |
 | `MOCHI_SUMMARIZATION_ENABLED` | `true` | Enable background summarization |
-| `MOCHI_SUMMARIZATION_INTERVAL_SECONDS` | `3` | Summarization check interval |
 | `MOCHI_DYNAMIC_CONTEXT_WINDOW_ENABLED` | `true` | Enable dynamic context window |
+| `MOCHI_CORS_ORIGINS` | `["*"]` | Allowed origins for CORS (list of URLs or `*` for all) |
+| `MOCHI_MAX_AGENT_ITERATIONS` | `50` | Maximum iterations for agent two-phase execution loop |
 | `MOCHI_LOG_LEVEL` | `INFO` | Logging level |

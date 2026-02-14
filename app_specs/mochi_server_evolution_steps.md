@@ -175,7 +175,7 @@ ollama>=0.5.0
 src/mochi_server/
 ├── ollama/
 │   ├── __init__.py          # Export OllamaClient
-│   ├── client.py            # Sync OllamaClient wrapper
+│   ├── client.py            # Async OllamaClient (wraps ollama.AsyncClient)
 │   └── types.py             # ModelInfo dataclass
 │
 ├── models/
@@ -194,8 +194,8 @@ tests/
 
 | File | Changes |
 |------|---------|
-| `dependencies.py` | Add `get_ollama_client()` provider |
-| `app.py` | Register models router |
+| `app.py` | Register models router; add `OllamaClient` to lifespan (singleton) |
+| `dependencies.py` | Add `get_ollama_client()` provider (reads from `app.state`) |
 | `models/health.py` | Add `ollama_connected`, `ollama_host` fields |
 | `routers/health.py` | Check Ollama connectivity, return real status |
 
@@ -208,7 +208,8 @@ tests/
 
 ### Key Implementation Notes
 
-- `OllamaClient` wraps `ollama.Client` and provides: `list_models()`, `get_model_info(name)`, `check_connection()`.
+- `OllamaClient` wraps `ollama.AsyncClient` and provides: `async list_models()`, `async get_model_info(name)`, `async check_connection()`. All methods are async.
+- `OllamaClient` is created once at startup in the FastAPI lifespan and stored in `app.state.ollama_client`. It is injected into route handlers via `get_ollama_client(request)`.
 - `ModelInfo` is a dataclass holding model metadata (name, size, format, family, parameter_size, quantization, capabilities, context_length).
 - Model capabilities are derived from the model's metadata (e.g., "tools" support).
 - The health endpoint catches connection errors gracefully — if Ollama is down, it returns `"status": "ok", "ollama_connected": false` (the server itself is healthy).
@@ -216,7 +217,7 @@ tests/
 
 ### Testing
 
-- Mock `ollama.Client` in all tests — no real Ollama required.
+- Mock `ollama.AsyncClient` in all tests — no real Ollama required.
 - Test model listing returns expected format.
 - Test model detail for a specific model.
 - Test model not found returns 404.
@@ -388,7 +389,7 @@ tests/
 
 | File | Changes |
 |------|---------|
-| `ollama/client.py` | Add `chat()` method (non-streaming, sync) |
+| `ollama/client.py` | Add `async chat_stream()` method (async streaming via `ollama.AsyncClient`) |
 | `dependencies.py` | Add any chat-specific dependencies if needed |
 | `app.py` | Register chat router |
 | `sessions/session.py` | Ensure `add_message()` handles all message types correctly |
@@ -403,24 +404,25 @@ tests/
 
 - The chat endpoint flow:
   1. Load the session from disk.
-  2. Add the user message to the session.
+  2. Add the user message to the session (if `message` is provided; if `null`, re-generate from existing last user message).
   3. Build the message history for Ollama (convert session messages to Ollama's format).
-  4. Call `OllamaClient.chat()` with the message history and model.
-  5. Create an `AssistantMessage` from Ollama's response.
+  4. Call `OllamaClient.chat_stream()` (async streaming) and collect all chunks into a complete response.
+  5. Create an `AssistantMessage` from the accumulated response.
   6. Add the assistant message to the session.
   7. Save the session to disk.
-  8. Return the response.
+  8. Return the complete response.
+- Even though this is the "non-streaming" HTTP endpoint, it internally uses async streaming from Ollama and collects chunks. There is no non-streaming Ollama call.
 - The `think` parameter in the request is passed to Ollama if the model supports it.
+- The `message` field in `ChatRequest` is optional (`str | None = None`). If `None`, the server re-generates from the last user message in session history (used after editing).
 - If the session doesn't exist, return 404.
 - If Ollama returns an error, propagate it with the spec's error format.
-- The non-streaming endpoint uses Ollama's sync client with `stream=False`.
 - No tool handling yet — tool calls in the response are ignored in this phase.
 - No context window management yet — the full message history is sent.
 - The response includes `tool_calls_executed: []` and a placeholder `context_window` object.
 
 ### Testing
 
-- Chat with a mocked Ollama that returns a simple response.
+- Chat with a mocked async Ollama client that returns streaming chunks.
 - Verify user message is saved to the session.
 - Verify assistant message is saved to the session.
 - Verify message metadata (message_id, timestamp, eval_count, etc.).
@@ -485,7 +487,6 @@ tests/
 
 | File | Changes |
 |------|---------|
-| `ollama/client.py` | Add `chat_stream()` method (sync, yields chunks) |
 | `routers/chat.py` | Add `POST /api/v1/chat/{session_id}/stream` endpoint |
 | `models/chat.py` | Add SSE event payload schemas |
 | `sessions/session.py` | Add `edit_message()` and `truncate_after()` methods |
@@ -512,7 +513,7 @@ tests/
 ### Key Implementation Notes
 
 - Streaming uses `sse-starlette`'s `EventSourceResponse` wrapping an async generator.
-- The sync `OllamaClient.chat_stream()` runs in a thread via `asyncio.to_thread()` to avoid blocking the event loop. The sync generator is consumed in the thread and chunks are put into an `asyncio.Queue` that the async generator reads from.
+- `OllamaClient.chat_stream()` is already async (returns `AsyncIterator[ChatResponse]`), so it can be consumed directly in the async generator — no threads or queues needed.
 - Each SSE event is a JSON object with an `event` type field.
 - The assistant message is accumulated during streaming, then saved to the session when the stream completes.
 - If the client disconnects mid-stream, save whatever content was generated so far.
@@ -556,7 +557,6 @@ uv run pytest tests/
 ### Review & Refactor
 
 - Is the async generator pattern clean and maintainable?
-- Does the thread-based streaming hold up under concurrent requests?
 - Is SSE event serialization consistent?
 - Revisit the chat router — is it getting too large? Consider extracting a chat service.
 
@@ -785,7 +785,7 @@ src/mochi_server/
 
 tests/
 ├── fixtures/
-│   └── sample_tools/        # Test tool modules for discovery tests
+│   └── sample_tools/            # Test tool modules for discovery tests
 │       ├── __init__.py
 │       └── math_tools.py
 ├── unit/
@@ -816,7 +816,7 @@ tests/
 | `GET` | `/api/v1/tools` | List all discovered tools and tool groups |
 | `GET` | `/api/v1/tools/{tool_name}` | Get details for a specific tool |
 | `POST` | `/api/v1/tools/reload` | Force reload tools from disk |
-| `POST` | `/api/v1/chat/{session_id}/confirm-tool` | Approve or deny a pending tool call |
+| `POST` | `/api/v1/chat/{session_id}/confirm-tool` | Approve or deny a pending tool call (no server-side timeout) |
 
 ### SSE Events Added in This Phase
 
@@ -848,8 +848,8 @@ tests/
   2. Emit `tool_call_confirmation_required` SSE event with a `confirmation_id`.
   3. The stream pauses and waits for a client callback to `POST /chat/{id}/confirm-tool`.
   4. If approved, execute the tool and continue as above.
-  5. If denied (or timeout), skip the tool and inform the LLM.
-- **Confirmation state:** Pending confirmations are held in memory (e.g., an `asyncio.Event` + dict keyed by `confirmation_id`). They expire after a configurable timeout.
+  5. If denied, skip the tool and inform the LLM. If the client disconnects without responding, the tool call is treated as denied and the partial response is saved.
+- **Confirmation state:** Pending confirmations are held in memory (e.g., an `asyncio.Event` + dict keyed by `confirmation_id`). There is no server-side timeout — the client is responsible for responding.
 - Tool results are always converted to strings before being sent to the LLM.
 - Session's `tool_settings` (set during creation or via `PATCH`) determines which tools are active and the execution policy.
 
@@ -933,8 +933,8 @@ tests/
 │   └── sample_agents/       # Test agent directories
 │       └── coder/
 │           ├── SKILL.md
-│           └── tools/
-│               └── __init__.py
+│           ├── coder.py
+│           └── __init__.py
 ├── unit/
 │   ├── test_agent_discovery.py
 │   ├── test_agent_execution.py
@@ -960,7 +960,7 @@ tests/
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/agents` | List all discovered agents |
-| `GET` | `/api/v1/agents/{agent_name}` | Get details for a specific agent |
+| `GET` | `/api/v1/agents/agent/{agent_name}` | Get details for a specific agent |
 | `POST` | `/api/v1/agents/reload` | Force reload agents from disk |
 | `GET` | `/api/v1/agents/chats` | List all agent chat sessions |
 | `GET` | `/api/v1/agents/chats/{session_id}` | Get an agent chat session |
@@ -982,8 +982,8 @@ tests/
 - **Agent Validation:** An agent is `valid` only if it has a `SKILL.md` and at least one discoverable tool.
 - **Agent Tool Factory:** `tool_factory.py` creates a dynamic `agent` function whose docstring lists all enabled agents and their descriptions. This function is added to the tool schemas sent to Ollama so the LLM can invoke agents. A **new function object** must be created each time the enabled agent list changes, because Ollama's schema cache is keyed on `id(func)`.
 - **Two-Phase Execution Loop:**
-  1. **Planning phase:** The agent receives the user's instruction. An ephemeral planning prompt (loaded from `planning_prompt_path`) is appended to the request but **not** persisted. Ollama is called **without** tools. The planning response is saved to the agent's chat session.
-  2. **Execution phase:** An ephemeral execution prompt (loaded from `execution_prompt_path`) is appended. Ollama is called **with** the agent's tools. If the response contains tool calls, they are executed and the results are sent back to Ollama. This loops until the LLM responds with plain text (no tool calls). The final response is saved.
+  1. **Planning phase:** The agent receives the user's instruction. An ephemeral planning prompt (loaded from `planning_prompt_path`) is appended to the request but **not** persisted. Ollama is called **without** tools (async streaming). The planning response is saved to the agent's chat session.
+  2. **Execution phase:** An ephemeral execution prompt (loaded from `execution_prompt_path`) is appended. Ollama is called **with** the agent's tools (async streaming). If the response contains tool calls, they are executed and the results are sent back to Ollama. This loops until the LLM responds with plain text (no tool calls), or the maximum iteration limit is reached (`max_agent_iterations`, default 50). The final response is saved.
 - **Agent Chat Sessions:** Each agent invocation uses a dedicated `ChatSession` stored in `agent_chats_dir`. The same session format (v1.3) is used. Agent sessions are reused across invocations to maintain agent memory.
 - **System Prompt Refresh:** On every agent invocation, the agent's system prompt is re-read from its `SKILL.md` file to pick up any changes.
 - **Integration with main chat:** When the main LLM calls the `agent` tool during streaming, the chat router delegates to `AgentExecutionService`. Agent SSE events are forwarded to the client in real time. The agent's final output becomes the tool result in the main conversation, and the main LLM continues with it.
@@ -1058,7 +1058,7 @@ ollama-instructor>=0.1.0
 ```
 src/mochi_server/
 ├── ollama/
-│   └── async_client.py      # AsyncOllamaClient + AsyncInstructorOllamaClient
+│   └── instructor_client.py  # AsyncInstructorOllamaClient (structured output)
 │
 ├── services/
 │   ├── summarization.py     # SummarizationService
