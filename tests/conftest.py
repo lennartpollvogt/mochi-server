@@ -60,6 +60,8 @@ async def async_client(test_app):
     Yields:
         AsyncClient: Async HTTP client for making test requests.
     """
-    transport = ASGITransport(app=test_app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
+    # Trigger the lifespan startup manually for tests
+    async with test_app.router.lifespan_context(test_app):
+        transport = ASGITransport(app=test_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client

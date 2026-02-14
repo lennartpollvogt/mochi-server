@@ -5,6 +5,7 @@ the FastAPI application instance, including lifespan management for startup/shut
 and router registration.
 """
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -12,7 +13,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from mochi_server.config import MochiServerSettings
-from mochi_server.routers import health
+from mochi_server.ollama import OllamaClient
+from mochi_server.routers import health, models
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -23,23 +27,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Expensive objects (like Ollama clients and discovery services) are created
     once at startup and stored in app.state for reuse across all requests.
 
-    Phase 0: No startup logic needed yet.
-    Phase 1+: Will initialize Ollama clients and discovery services here.
-
     Args:
         app: The FastAPI application instance.
 
     Yields:
         None: Control is yielded while the app is running.
     """
-    # Startup logic (Phase 1+)
-    # app.state.ollama_client = OllamaClient(...)
-    # app.state.tool_discovery = ToolDiscoveryService(...)
+    # Startup: Initialize Ollama client
+    settings: MochiServerSettings = app.state.settings
+    app.state.ollama_client = OllamaClient(host=settings.ollama_host)
+    logger.info(f"Initialized Ollama client with host: {settings.ollama_host}")
+
+    # Check initial connectivity
+    connected = await app.state.ollama_client.check_connection()
+    if connected:
+        logger.info("Successfully connected to Ollama")
+    else:
+        logger.warning("Could not connect to Ollama - check if server is running")
 
     yield
 
-    # Shutdown logic (if needed in future phases)
-    pass
+    # Shutdown: Clean up resources
+    if hasattr(app.state, "ollama_client"):
+        await app.state.ollama_client.close()
+        logger.info("Ollama client closed")
 
 
 def create_app(settings: MochiServerSettings | None = None) -> FastAPI:
@@ -68,7 +79,11 @@ def create_app(settings: MochiServerSettings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Store settings in app.state for lifespan access
+    app.state.settings = settings
+
     # Configure CORS
+    # Note: FastAPI's type hints for add_middleware are overly strict
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -79,5 +94,6 @@ def create_app(settings: MochiServerSettings | None = None) -> FastAPI:
 
     # Register routers
     app.include_router(health.router)
+    app.include_router(models.router)
 
     return app
