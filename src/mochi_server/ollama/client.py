@@ -134,8 +134,32 @@ class OllamaClient:
             Exception: If the Ollama API request fails (except for 404)
         """
         try:
+            # First get the model from the list to get name and size
+            list_response = await self._client.list()
+            list_model = None
+
+            if hasattr(list_response, "models"):
+                for model_obj in list_response.models:
+                    model_obj_name = (
+                        model_obj.model
+                        if hasattr(model_obj, "model")
+                        else model_obj.name
+                        if hasattr(model_obj, "name")
+                        else None
+                    )
+                    if model_obj_name == model_name:
+                        list_model = model_obj
+                        break
+
+            if list_model is None:
+                logger.debug(f"Model not found in list: {model_name}")
+                return None
+
+            # Get detailed info from show
             show_response = await self._client.show(model_name)
-            model_info = ModelInfo.from_ollama_model(show_response)
+            model_info = ModelInfo.from_ollama_model(
+                show_response, list_model=list_model
+            )
 
             logger.debug(f"Retrieved info for model: {model_name}")
             return model_info
