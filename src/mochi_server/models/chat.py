@@ -4,6 +4,8 @@ This module defines the request and response schemas for the chat endpoints,
 including both streaming and non-streaming chat interactions.
 """
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -110,6 +112,105 @@ class ChatResponse(BaseModel):
                     "usage_tokens": 165,
                     "reason": "initial_setup",
                 },
+            }
+        }
+    )
+
+
+# ============================================================================
+# SSE Event Payload Models (Phase 4: Streaming Chat)
+# ============================================================================
+
+
+class ContentDeltaEvent(BaseModel):
+    """SSE event payload for content deltas during streaming."""
+
+    content: str = Field(description="Text chunk from the LLM")
+    role: str = Field(default="assistant", description="Message role")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "content": "Hello",
+                "role": "assistant",
+            }
+        }
+    )
+
+
+class ThinkingDeltaEvent(BaseModel):
+    """SSE event payload for thinking/reasoning chunks."""
+
+    content: str = Field(description="Thinking content chunk")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "content": "Let me consider...",
+            }
+        }
+    )
+
+
+class MessageCompleteEvent(BaseModel):
+    """SSE event payload when message is complete with full metadata."""
+
+    message_id: str = Field(description="Unique message identifier")
+    model: str = Field(description="Model that generated the message")
+    eval_count: int | None = Field(
+        default=None, description="Number of tokens generated"
+    )
+    prompt_eval_count: int | None = Field(
+        default=None, description="Number of tokens in the prompt"
+    )
+    context_window: ContextWindowInfo = Field(description="Context window information")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "message_id": "a1b2c3d4e5",
+                "model": "llama3.2:latest",
+                "eval_count": 45,
+                "prompt_eval_count": 120,
+                "context_window": {
+                    "current_window": 8192,
+                    "usage_tokens": 165,
+                    "reason": "initial_setup",
+                },
+            }
+        }
+    )
+
+
+class ErrorEvent(BaseModel):
+    """SSE event payload for errors during streaming."""
+
+    code: str = Field(description="Error code")
+    message: str = Field(description="Human-readable error message")
+    details: dict[str, Any] = Field(
+        default_factory=dict, description="Additional error details"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "code": "ollama_error",
+                "message": "Failed to generate response",
+                "details": {"session_id": "abc123"},
+            }
+        }
+    )
+
+
+class DoneEvent(BaseModel):
+    """SSE event payload when stream is complete."""
+
+    session_id: str = Field(description="Session identifier")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "session_id": "a1b2c3d4e5",
             }
         }
     )

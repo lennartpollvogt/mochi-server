@@ -60,6 +60,12 @@ class UpdateSessionRequest(BaseModel):
     )
 
 
+class EditMessageRequest(BaseModel):
+    """Request body for editing a message."""
+
+    content: str = Field(..., description="New content for the message")
+
+
 class SummaryResponse(BaseModel):
     """Conversation summary information."""
 

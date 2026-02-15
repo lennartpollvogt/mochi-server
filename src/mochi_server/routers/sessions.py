@@ -19,6 +19,7 @@ from mochi_server.dependencies import get_session_manager
 from mochi_server.models.sessions import (
     AgentSettingsResponse,
     CreateSessionRequest,
+    EditMessageRequest,
     MessageResponse,
     MessagesResponse,
     SessionDetailResponse,
@@ -402,4 +403,77 @@ async def get_messages(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get messages: {str(e)}",
+        )
+
+
+@router.put(
+    "/{session_id}/messages/{message_index}",
+    status_code=status.HTTP_200_OK,
+    summary="Edit a message and truncate subsequent messages",
+)
+async def edit_message(
+    session_id: str,
+    message_index: int,
+    request: EditMessageRequest,
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+) -> None:
+    """Edit a message in the session and remove all messages after it.
+
+    This allows users to branch the conversation from any point by editing
+    a previous message. All messages after the edited message are removed.
+
+    Only user messages can be edited.
+
+    Args:
+        session_id: The session ID
+        message_index: The index of the message to edit (0-based)
+        request: New message content
+        session_manager: Injected SessionManager
+
+    Raises:
+        HTTPException: 404 if session not found
+        HTTPException: 400 if message_index is out of range or not a user message
+    """
+    try:
+        session = session_manager.get_session(session_id)
+
+        # Validate message index
+        if message_index < 0 or message_index >= len(session.messages):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Message index {message_index} out of range (0-{len(session.messages) - 1})",
+            )
+
+        # Edit the message (this also truncates)
+        try:
+            session.edit_message(message_index, request.content)
+        except ValueError as e:
+            # Not a user message
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+
+        # Save the session
+        session.save(session_manager.sessions_dir)
+        logger.info(
+            f"Edited message {message_index} in session {session_id} and truncated subsequent messages"
+        )
+
+    except FileNotFoundError:
+        logger.warning(f"Session {session_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to edit message in session {session_id}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to edit message: {str(e)}",
         )
