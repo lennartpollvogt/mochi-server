@@ -85,7 +85,7 @@ def create_app(settings: MochiServerSettings | None = None) -> FastAPI:
     # Configure CORS
     # Note: FastAPI's type hints for add_middleware are overly strict
     app.add_middleware(
-        CORSMiddleware,
+        CORSMiddleware,  # type: ignore[arg-type]
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],

@@ -11,7 +11,7 @@ from typing import Iterator
 
 from ollama import Client
 from ollama._types import ChatResponse
-from rich import print
+from rich import print  # type: ignore[import-untyped]
 
 
 def get_weather(city: str) -> str:

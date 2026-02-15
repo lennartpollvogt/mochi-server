@@ -56,7 +56,6 @@ async def test_check_connection_failure(ollama_client, mock_ollama_async_client)
 async def test_list_models_success(ollama_client, mock_ollama_async_client):
     """Test listing models successfully."""
     # Mock the list response with object-like structure
-    from unittest.mock import MagicMock
 
     mock_model1 = MagicMock()
     mock_model1.model = "llama3:8b"
@@ -113,7 +112,6 @@ async def test_list_models_filters_non_completion(
     ollama_client, mock_ollama_async_client
 ):
     """Test that non-completion models are filtered out."""
-    from unittest.mock import MagicMock
 
     mock_model1 = MagicMock()
     mock_model1.model = "llama3:8b"
@@ -159,7 +157,6 @@ async def test_list_models_filters_non_completion(
 @pytest.mark.asyncio
 async def test_list_models_empty(ollama_client, mock_ollama_async_client):
     """Test listing models when none are available."""
-    from unittest.mock import MagicMock
 
     mock_list_response = MagicMock()
     mock_list_response.models = []
@@ -182,7 +179,6 @@ async def test_list_models_api_error(ollama_client, mock_ollama_async_client):
 @pytest.mark.asyncio
 async def test_get_model_info_success(ollama_client, mock_ollama_async_client):
     """Test getting model info successfully."""
-    from unittest.mock import MagicMock
 
     # Mock the list response
     mock_model = MagicMock()
@@ -218,7 +214,6 @@ async def test_get_model_info_success(ollama_client, mock_ollama_async_client):
 @pytest.mark.asyncio
 async def test_get_model_info_not_found(ollama_client, mock_ollama_async_client):
     """Test getting model info when model doesn't exist."""
-    from unittest.mock import MagicMock
 
     # Mock list response with no matching model
     mock_list_response = MagicMock()
