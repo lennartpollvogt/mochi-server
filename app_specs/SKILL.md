@@ -209,6 +209,7 @@ If you change the session format, you **must** increment the format version and 
 - Test both success and error paths.
 - Use factories or fixtures for creating test sessions, messages, and tool functions.
 - run `ruff check` to check code style and formatting.
+- run `ty check` to check type annotations.
 
 ---
 
