@@ -5,7 +5,7 @@ and format compatibility.
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -38,7 +38,7 @@ def test_create_new_session():
 
 def test_create_session_with_messages():
     """Test creating a session with initial messages."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     messages = [
         UserMessage(content="Hello", message_id="msg1", timestamp=now),
         AssistantMessage(
@@ -55,7 +55,7 @@ def test_create_session_with_messages():
 def test_add_message():
     """Test adding a message to a session."""
     session = ChatSession(session_id="test123", model="llama3:8b")
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     message = UserMessage(content="Hello", message_id="msg1", timestamp=now)
     session.add_message(message)
@@ -68,7 +68,7 @@ def test_add_message():
 def test_add_multiple_messages():
     """Test adding multiple messages updates count correctly."""
     session = ChatSession(session_id="test123", model="llama3:8b")
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
     session.add_message(
@@ -87,7 +87,7 @@ def test_add_multiple_messages():
 def test_edit_message():
     """Test editing a user message truncates history."""
     session = ChatSession(session_id="test123", model="llama3:8b")
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     # Add conversation
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
@@ -117,7 +117,7 @@ def test_edit_message():
 def test_edit_message_in_middle():
     """Test editing a message in the middle of conversation."""
     session = ChatSession(session_id="test123", model="llama3:8b")
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
     session.add_message(
@@ -146,7 +146,7 @@ def test_edit_message_in_middle():
 def test_edit_message_invalid_index():
     """Test editing with invalid index raises IndexError."""
     session = ChatSession(session_id="test123", model="llama3:8b")
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
 
@@ -157,7 +157,7 @@ def test_edit_message_invalid_index():
 def test_edit_non_user_message():
     """Test editing a non-user message raises ValueError."""
     session = ChatSession(session_id="test123", model="llama3:8b")
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     session.add_message(
         AssistantMessage(
@@ -205,7 +205,7 @@ def test_update_agent_settings():
 
 def test_to_dict():
     """Test converting session to dictionary."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session = ChatSession(session_id="test123", model="llama3:8b")
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
 
@@ -222,7 +222,7 @@ def test_to_dict():
 
 def test_save_and_load(tmp_path: Path):
     """Test saving and loading a session."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session = ChatSession(session_id="test123", model="llama3:8b")
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
     session.add_message(
@@ -288,7 +288,7 @@ def test_get_preview_empty_session():
 
 def test_get_preview_with_user_message():
     """Test getting preview from session with user message."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session = ChatSession(session_id="test123", model="llama3:8b")
     session.add_message(
         UserMessage(content="This is a test message", message_id="msg1", timestamp=now)
@@ -301,7 +301,7 @@ def test_get_preview_with_user_message():
 
 def test_get_preview_truncated():
     """Test that long messages are truncated in preview."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session = ChatSession(session_id="test123", model="llama3:8b")
     long_content = "a" * 200
     session.add_message(
@@ -316,7 +316,7 @@ def test_get_preview_truncated():
 
 def test_get_preview_skips_system_messages():
     """Test that preview skips system messages and finds first user message."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session = ChatSession(session_id="test123", model="llama3:8b")
     session.add_message(
         SystemMessage(
@@ -358,7 +358,7 @@ def test_session_with_summary():
 
 def test_session_with_all_message_types(tmp_path: Path):
     """Test session with all message types can be saved and loaded."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session = ChatSession(session_id="test123", model="llama3:8b")
 
     # Add all message types
@@ -446,7 +446,7 @@ def test_updated_at_changes():
 
     time.sleep(0.01)
 
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
 
     assert session.metadata.updated_at != original_updated

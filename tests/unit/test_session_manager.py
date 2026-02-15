@@ -4,7 +4,7 @@ Tests session manager's ability to create, list, retrieve, update,
 and delete sessions with proper model validation.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -346,7 +346,7 @@ async def test_update_session_not_found(sessions_dir: Path):
 
 def test_get_messages(sessions_dir: Path):
     """Test getting messages from a session."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session = ChatSession(session_id="test123", model="llama3:8b")
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
     session.add_message(UserMessage(content="World", message_id="msg2", timestamp=now))

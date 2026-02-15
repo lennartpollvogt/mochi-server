@@ -266,7 +266,7 @@ async def test_get_session_not_found(async_client):
 async def test_get_session_with_messages(async_client, test_settings):
     """Test retrieving a session with messages."""
     # Create session manually with messages
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from mochi_server.sessions import ChatSession, UserMessage
 
@@ -274,7 +274,7 @@ async def test_get_session_with_messages(async_client, test_settings):
     sessions_dir = test_settings.resolved_sessions_dir
 
     session = ChatSession(session_id="test123", model="llama3:8b")
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
     session.save(sessions_dir)
 
@@ -456,7 +456,7 @@ async def test_update_session_not_found(async_client):
 async def test_get_messages(async_client, test_settings):
     """Test getting messages from a session."""
     # Create session with messages
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from mochi_server.sessions import ChatSession, UserMessage
 
@@ -464,7 +464,7 @@ async def test_get_messages(async_client, test_settings):
     sessions_dir = test_settings.resolved_sessions_dir
 
     session = ChatSession(session_id="test123", model="llama3:8b")
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
     session.add_message(UserMessage(content="World", message_id="msg2", timestamp=now))
     session.save(sessions_dir)

@@ -12,7 +12,7 @@ import json
 import logging
 import uuid
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -89,7 +89,7 @@ class ChatSession:
 
         # Initialize metadata if not provided
         if metadata is None:
-            now = datetime.utcnow().isoformat() + "Z"
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             self.metadata = SessionMetadata(
                 session_id=session_id,
                 model=model,
@@ -110,7 +110,9 @@ class ChatSession:
         """
         self.messages.append(message)
         self.metadata.message_count = len(self.messages)
-        self.metadata.updated_at = datetime.utcnow().isoformat() + "Z"
+        self.metadata.updated_at = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
 
     def edit_message(self, index: int, content: str) -> None:
         """Edit a message and truncate all messages after it.
@@ -137,14 +139,18 @@ class ChatSession:
 
         # Update the message content
         message.content = content
-        message.timestamp = datetime.utcnow().isoformat() + "Z"
+        message.timestamp = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
 
         # Truncate all messages after this one
         self.messages = self.messages[: index + 1]
 
         # Update metadata
         self.metadata.message_count = len(self.messages)
-        self.metadata.updated_at = datetime.utcnow().isoformat() + "Z"
+        self.metadata.updated_at = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
 
     def update_model(self, model: str) -> None:
         """Update the model used by this session.
@@ -154,7 +160,9 @@ class ChatSession:
         """
         self.model = model
         self.metadata.model = model
-        self.metadata.updated_at = datetime.utcnow().isoformat() + "Z"
+        self.metadata.updated_at = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
 
     def update_tool_settings(self, tool_settings: ToolSettings) -> None:
         """Update tool settings for this session.
@@ -163,7 +171,9 @@ class ChatSession:
             tool_settings: New tool settings
         """
         self.metadata.tool_settings = tool_settings
-        self.metadata.updated_at = datetime.utcnow().isoformat() + "Z"
+        self.metadata.updated_at = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
 
     def update_agent_settings(self, agent_settings: AgentSettings) -> None:
         """Update agent settings for this session.
@@ -172,7 +182,9 @@ class ChatSession:
             agent_settings: New agent settings
         """
         self.metadata.agent_settings = agent_settings
-        self.metadata.updated_at = datetime.utcnow().isoformat() + "Z"
+        self.metadata.updated_at = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert session to a dictionary for JSON serialization.

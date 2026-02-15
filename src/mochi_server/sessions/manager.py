@@ -9,7 +9,7 @@ This module provides the SessionManager class which handles:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mochi_server.ollama.client import OllamaClient
@@ -77,7 +77,7 @@ class SessionManager:
 
         # Add system message if provided
         if options.system_prompt:
-            now = datetime.utcnow().isoformat() + "Z"
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             system_message = SystemMessage(
                 content=options.system_prompt,
                 source_file=options.system_prompt_source_file,
