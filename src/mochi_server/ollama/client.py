@@ -6,6 +6,7 @@ is designed to be created once at startup and reused.
 """
 
 import logging
+from typing import Any, AsyncIterator
 
 import ollama
 
@@ -172,6 +173,76 @@ class OllamaClient:
             raise
         except Exception as e:
             logger.error(f"Failed to get model info for {model_name}: {e}")
+            raise
+
+    async def chat_stream(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        options: dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream chat responses from Ollama.
+
+        This method sends a chat request to Ollama and yields response chunks
+        as they arrive. All chat interactions should use streaming, even for
+        non-streaming HTTP endpoints (which collect all chunks before returning).
+
+        Args:
+            model: The model name to use for the chat
+            messages: List of message dicts in Ollama format:
+                      [{"role": "user", "content": "..."}, ...]
+            options: Optional model parameters (temperature, etc.)
+
+        Yields:
+            dict: Response chunks from Ollama. Each chunk contains:
+                  - model: str - The model name
+                  - created_at: str - Timestamp
+                  - message: dict - Contains role and content
+                  - done: bool - True on the final chunk
+                  - (final chunk includes eval_count, prompt_eval_count, etc.)
+
+        Raises:
+            Exception: If the Ollama API request fails
+
+        Example:
+            >>> async for chunk in client.chat_stream(
+            ...     model="llama3.2:latest",
+            ...     messages=[{"role": "user", "content": "Hello"}]
+            ... ):
+            ...     if not chunk.get("done"):
+            ...         print(chunk["message"]["content"], end="")
+        """
+        try:
+            logger.debug(f"Starting chat stream with model: {model}")
+            logger.debug(f"Message count: {len(messages)}")
+
+            # Call Ollama's async chat API with streaming
+            async for chunk in await self._client.chat(
+                model=model,
+                messages=messages,
+                stream=True,
+                options=options,
+            ):
+                # Convert the chunk to a dict if it's not already
+                if hasattr(chunk, "model_dump"):
+                    chunk_dict = chunk.model_dump()
+                elif isinstance(chunk, dict):
+                    chunk_dict = chunk
+                else:
+                    # Fallback: convert to dict using vars()
+                    chunk_dict = vars(chunk)
+
+                logger.debug(
+                    f"Received chunk: done={chunk_dict.get('done')}, "
+                    f"content_length={len(chunk_dict.get('message', {}).get('content', ''))}"
+                )
+
+                yield chunk_dict
+
+            logger.debug("Chat stream completed")
+
+        except Exception as e:
+            logger.error(f"Chat stream failed: {e}")
             raise
 
     async def close(self) -> None:

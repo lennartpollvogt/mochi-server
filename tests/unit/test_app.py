@@ -31,7 +31,7 @@ def test_create_app_includes_health_router():
     app = create_app()
 
     # Check that the health endpoint route exists
-    routes = [route.path for route in app.routes]
+    routes = [route.path for route in app.routes]  # type: ignore[attr-defined]
     assert "/api/v1/health" in routes
 
 
@@ -41,7 +41,7 @@ def test_create_app_has_cors_middleware(test_settings):
 
     # Check that CORSMiddleware is in the middleware stack
     # FastAPI wraps middleware, so we check middleware_stack instead
-    middleware_classes = [m.cls.__name__ for m in app.user_middleware]
+    middleware_classes = [m.cls.__name__ for m in app.user_middleware]  # type: ignore[attr-defined]
     assert "CORSMiddleware" in middleware_classes
 
 

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from mochi_server.config import MochiServerSettings
 from mochi_server.ollama import OllamaClient
-from mochi_server.routers import health, models, sessions
+from mochi_server.routers import chat, health, models, sessions
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def create_app(settings: MochiServerSettings | None = None) -> FastAPI:
     # Configure CORS
     # Note: FastAPI's type hints for add_middleware are overly strict
     app.add_middleware(
-        CORSMiddleware,
+        CORSMiddleware,  # type: ignore[arg-type]
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
@@ -96,5 +96,6 @@ def create_app(settings: MochiServerSettings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(models.router)
     app.include_router(sessions.router)
+    app.include_router(chat.router)
 
     return app

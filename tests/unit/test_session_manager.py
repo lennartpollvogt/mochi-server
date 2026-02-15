@@ -110,6 +110,10 @@ async def test_create_session_with_system_prompt(
     assert len(session.messages) == 1
     assert session.messages[0].role == "system"
     assert session.messages[0].content == "You are a helpful assistant"
+    # Type assertion for accessing SystemMessage-specific attribute
+    from mochi_server.sessions.types import SystemMessage
+
+    assert isinstance(session.messages[0], SystemMessage)
     assert session.messages[0].source_file == "helpful.md"
 
 

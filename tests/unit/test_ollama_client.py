@@ -1,6 +1,6 @@
 """Unit tests for the OllamaClient wrapper."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -56,7 +56,6 @@ async def test_check_connection_failure(ollama_client, mock_ollama_async_client)
 async def test_list_models_success(ollama_client, mock_ollama_async_client):
     """Test listing models successfully."""
     # Mock the list response with object-like structure
-    from unittest.mock import MagicMock
 
     mock_model1 = MagicMock()
     mock_model1.model = "llama3:8b"
@@ -113,7 +112,6 @@ async def test_list_models_filters_non_completion(
     ollama_client, mock_ollama_async_client
 ):
     """Test that non-completion models are filtered out."""
-    from unittest.mock import MagicMock
 
     mock_model1 = MagicMock()
     mock_model1.model = "llama3:8b"
@@ -159,7 +157,6 @@ async def test_list_models_filters_non_completion(
 @pytest.mark.asyncio
 async def test_list_models_empty(ollama_client, mock_ollama_async_client):
     """Test listing models when none are available."""
-    from unittest.mock import MagicMock
 
     mock_list_response = MagicMock()
     mock_list_response.models = []
@@ -182,7 +179,6 @@ async def test_list_models_api_error(ollama_client, mock_ollama_async_client):
 @pytest.mark.asyncio
 async def test_get_model_info_success(ollama_client, mock_ollama_async_client):
     """Test getting model info successfully."""
-    from unittest.mock import MagicMock
 
     # Mock the list response
     mock_model = MagicMock()
@@ -218,7 +214,6 @@ async def test_get_model_info_success(ollama_client, mock_ollama_async_client):
 @pytest.mark.asyncio
 async def test_get_model_info_not_found(ollama_client, mock_ollama_async_client):
     """Test getting model info when model doesn't exist."""
-    from unittest.mock import MagicMock
 
     # Mock list response with no matching model
     mock_list_response = MagicMock()
@@ -309,3 +304,135 @@ def test_model_info_from_ollama_model_fallback_context():
 
     model_info = ModelInfo.from_ollama_model(ollama_data)
     assert model_info.context_length == 16384
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_success(ollama_client, mock_ollama_async_client):
+    """Test successful chat streaming."""
+    # Mock streaming response
+    chunks = [
+        {
+            "model": "llama3.2:latest",
+            "message": {"role": "assistant", "content": "Hello"},
+            "done": False,
+        },
+        {
+            "model": "llama3.2:latest",
+            "message": {"role": "assistant", "content": " there"},
+            "done": False,
+        },
+        {
+            "model": "llama3.2:latest",
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+            "eval_count": 10,
+            "prompt_eval_count": 50,
+        },
+    ]
+
+    async def mock_chat(*args, **kwargs):
+        for chunk in chunks:
+            yield chunk
+
+    mock_ollama_async_client.chat.return_value = mock_chat()
+
+    # Collect all chunks
+    collected = []
+    async for chunk in ollama_client.chat_stream(
+        model="llama3.2:latest",
+        messages=[{"role": "user", "content": "Hi"}],
+    ):
+        collected.append(chunk)
+
+    assert len(collected) == 3
+    assert collected[0]["message"]["content"] == "Hello"
+    assert collected[1]["message"]["content"] == " there"
+    assert collected[2]["done"] is True
+    assert collected[2]["eval_count"] == 10
+
+    # Verify the call was made with correct parameters
+    mock_ollama_async_client.chat.assert_called_once()
+    call_kwargs = mock_ollama_async_client.chat.call_args.kwargs
+    assert call_kwargs["model"] == "llama3.2:latest"
+    assert call_kwargs["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_with_options(ollama_client, mock_ollama_async_client):
+    """Test chat streaming with options."""
+    chunks = [
+        {
+            "model": "llama3.2:latest",
+            "message": {"role": "assistant", "content": "OK"},
+            "done": True,
+        },
+    ]
+
+    async def mock_chat(*args, **kwargs):
+        for chunk in chunks:
+            yield chunk
+
+    mock_ollama_async_client.chat.return_value = mock_chat()
+
+    options = {"temperature": 0.7, "num_predict": 100}
+
+    collected = []
+    async for chunk in ollama_client.chat_stream(
+        model="llama3.2:latest",
+        messages=[{"role": "user", "content": "Test"}],
+        options=options,
+    ):
+        collected.append(chunk)
+
+    assert len(collected) == 1
+
+    # Verify options were passed
+    call_kwargs = mock_ollama_async_client.chat.call_args.kwargs
+    assert call_kwargs["options"] == options
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_error(ollama_client, mock_ollama_async_client):
+    """Test chat streaming when an error occurs."""
+
+    async def mock_chat_error(*args, **kwargs):
+        raise Exception("Model not found")
+        yield  # Unreachable
+
+    mock_ollama_async_client.chat.return_value = mock_chat_error()
+
+    with pytest.raises(Exception, match="Model not found"):
+        async for chunk in ollama_client.chat_stream(
+            model="nonexistent",
+            messages=[{"role": "user", "content": "Hi"}],
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_empty_response(ollama_client, mock_ollama_async_client):
+    """Test chat streaming with empty response."""
+    chunks = [
+        {
+            "model": "llama3.2:latest",
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+        },
+    ]
+
+    async def mock_chat(*args, **kwargs):
+        for chunk in chunks:
+            yield chunk
+
+    mock_ollama_async_client.chat.return_value = mock_chat()
+
+    collected = []
+    async for chunk in ollama_client.chat_stream(
+        model="llama3.2:latest",
+        messages=[{"role": "user", "content": "Hi"}],
+    ):
+        collected.append(chunk)
+
+    assert len(collected) == 1
+    assert collected[0]["done"] is True
+    assert collected[0]["message"]["content"] == ""
