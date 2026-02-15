@@ -135,6 +135,13 @@ async def chat_non_streaming(
     This endpoint uses Ollama's streaming API internally but collects
     all chunks before returning the complete response to the client.
 
+    Message Handling:
+        - With message="text": Adds a new user message and generates assistant response
+        - With message=null: Continues from existing history without adding user message
+          - If last message is user: Regenerates the assistant response
+          - If last message is assistant: Continues the conversation (useful for agent loops,
+            multi-turn planning, or having the LLM elaborate on its previous output)
+
     Args:
         session_id: The session ID to chat with
         request_body: Chat request containing message and options
@@ -146,6 +153,19 @@ async def chat_non_streaming(
 
     Raises:
         HTTPException: 404 if session not found, 502 if Ollama fails
+
+    Examples:
+        # New user message
+        POST /api/v1/chat/{session_id}
+        {"message": "What is Python?"}
+
+        # Regenerate last response
+        POST /api/v1/chat/{session_id}
+        {"message": null}  # Last message must be user
+
+        # Continue from assistant (agent loop)
+        POST /api/v1/chat/{session_id}
+        {"message": null}  # Last message is assistant, LLM continues
     """
     # Get settings from app.state to ensure test isolation
     settings = request.app.state.settings
@@ -292,6 +312,13 @@ async def chat_streaming(
     Events are emitted as they occur: content_delta, thinking_delta (if think=true),
     message_complete, and done.
 
+    Message Handling:
+        - With message="text": Adds a new user message and streams assistant response
+        - With message=null: Continues from existing history without adding user message
+          - If last message is user: Regenerates the assistant response
+          - If last message is assistant: Continues the conversation (useful for agent loops,
+            multi-turn planning, or having the LLM elaborate on its previous output)
+
     Args:
         session_id: The session ID to chat with
         request_body: Chat request containing message and options
@@ -310,6 +337,15 @@ async def chat_streaming(
 
     Raises:
         HTTPException: 404 if session not found
+
+    Examples:
+        # New user message
+        POST /api/v1/chat/{session_id}/stream
+        {"message": "Create a plan for a web app"}
+
+        # Continue from assistant (agent loop pattern)
+        POST /api/v1/chat/{session_id}/stream
+        {"message": null}  # LLM continues elaborating or executing plan
     """
     # Get settings from app.state to ensure test isolation
     settings = request.app.state.settings

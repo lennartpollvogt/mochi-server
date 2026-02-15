@@ -155,6 +155,35 @@ curl -N -X POST "http://localhost:8000/api/v1/chat/$SESSION_ID/stream" \
   -d '{"message": "How do I use async/await?"}'
 ```
 
+### Agent Loop Pattern (Continuation)
+
+```bash
+# Initial user message
+curl -N -X POST "http://localhost:8000/api/v1/chat/$SESSION_ID/stream" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Create a plan for building a REST API"}'
+# → Assistant: "Here's my plan: 1) Design endpoints, 2) Implement..."
+
+# Continue from assistant message (no new user input)
+curl -N -X POST "http://localhost:8000/api/v1/chat/$SESSION_ID/stream" \
+  -H "Content-Type: application/json" \
+  -d '{"message": null}'
+# → Assistant: "Let me detail step 1. For endpoint design..."
+
+# Continue again (LLM keeps elaborating)
+curl -N -X POST "http://localhost:8000/api/v1/chat/$SESSION_ID/stream" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+# → Assistant: "Moving to step 2, implementation requires..."
+```
+
+**Use cases for continuation:**
+- Agent loops (planning → execution)
+- Multi-turn reasoning without user input
+- LLM elaborating on its own output
+- Tool calling workflows (Phase 7+)
+```
+
 ## Key Implementation Details
 
 ### SSE Streaming with EventSourceResponse
@@ -236,16 +265,43 @@ except Exception as e:
 
 This allows clients to receive error information without losing the SSE connection.
 
-### Message Regeneration
+### Message Regeneration and Continuation
 
-Clients can regenerate responses without adding a new user message:
+The chat endpoints support three message handling modes:
 
-```python
-# Empty request body or message=null
-{"message": null}  # or {}
+**1. New User Message:**
+```json
+{"message": "What is Python?"}
+```
+Adds a new user message and generates assistant response.
+
+**2. Regenerate Assistant Response:**
+```json
+{"message": null}
+```
+When the last message is a **user message**, regenerates the assistant response without adding a new user message.
+
+**3. Continue Conversation (Agent Loop Pattern):**
+```json
+{"message": null}  // or just {}
+```
+When the last message is an **assistant message**, the LLM continues from its own output. This enables:
+- Agent loops (planning phase → execution phase)
+- Multi-turn reasoning without user intervention
+- LLM elaborating on or refining its previous response
+- Tool calling workflows (assistant → tool result → assistant continues)
+
+**Example Agent Loop:**
+```
+User: "Create a plan"
+→ Assistant: "Here's my plan: 1) X, 2) Y"
+→ Continue: {"message": null}
+→ Assistant: "Let me execute step 1..."
+→ Continue: {"message": null}
+→ Assistant: "Now for step 2..."
 ```
 
-The streaming endpoint will use the existing message history to generate a new response.
+This pattern is essential for autonomous agent behavior and will be heavily used in Phase 7 (Tools) and Phase 8 (Agents).
 
 ## Testing Strategy
 
@@ -398,12 +454,24 @@ These are intentional for Phase 4 and will be addressed in future phases:
 - Simpler error handling
 - Performance is acceptable for typical responses
 
-#### Why Allow Message Regeneration?
+#### Why Allow Message Regeneration and Continuation?
 
+**Regeneration (last message = user):**
 - Users can re-roll responses they don't like
 - Useful after editing messages
 - Common pattern in chat interfaces
-- Simple to implement (just omit user message)
+
+**Continuation (last message = assistant):**
+- **Critical for agent loops** - planning → execution → reflection
+- Enables multi-turn LLM reasoning without user input
+- Essential for tool calling workflows (Phase 7+)
+- Allows LLM to elaborate on or refine its own output
+- Simple to implement (just omit user message, send existing history)
+
+The continuation pattern (`message=null` with last message = assistant) is a powerful feature that enables autonomous agent behavior and complex multi-turn workflows. It will be heavily utilized in:
+- **Phase 7 (Tools):** Assistant calls tool → tool result added → assistant continues to interpret result
+- **Phase 8 (Agents):** Planning phase → execution phase → follow-up actions
+- **Future phases:** Chain-of-thought reasoning, self-correction, iterative refinement
 
 ## Testing Commands
 
@@ -468,8 +536,27 @@ All deliverables meet specification requirements from:
 
 ---
 
+## Important Pattern: Continuation for Agent Loops
+
+A key feature validated in Phase 4 is the **continuation pattern** for agent loops:
+
+When `message=null` and the last message is an assistant message, the LLM continues from its own output. This was tested and confirmed to work correctly with the current implementation.
+
+**This pattern enables:**
+- ✅ Agent planning → execution workflows
+- ✅ Multi-turn reasoning without user input
+- ✅ LLM self-elaboration and refinement
+- ✅ Future tool calling workflows (Phase 7+)
+
+**Documentation added:**
+- ✅ `ChatRequest` model describes all three modes (new, regenerate, continue)
+- ✅ Both chat endpoints document the continuation pattern
+- ✅ Examples provided for agent loop usage
+
+---
+
 **Date Completed:** 2024  
-**Verified By:** Automated testing + manual verification  
+**Verified By:** Automated testing + manual verification + continuation pattern validation  
 **Test Results:** 143/143 tests passing (100%) ✅  
 **Code Quality:** ✅ All ruff checks passing  
-**Lines of Code Added:** ~650 (src: ~350, tests: ~300)
+**Lines of Code Added:** ~700 (src: ~400, tests: ~300)

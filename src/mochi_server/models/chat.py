@@ -14,11 +14,22 @@ class ChatRequest(BaseModel):
 
     Used by both POST /api/v1/chat/{session_id} (non-streaming)
     and POST /api/v1/chat/{session_id}/stream (streaming).
+
+    Message Behavior:
+    - message="some text" → Adds a new user message and generates response
+    - message=null (or omitted) → Continues from existing history without adding user message
+      - If last message is user → Regenerates the assistant response
+      - If last message is assistant → Continues the conversation (useful for agent loops)
     """
 
     message: str | None = Field(
         default=None,
-        description="The user message to send. If null, re-generates from the last user message in session history.",
+        description=(
+            "The user message to send. If null or omitted, continues from the existing "
+            "message history without adding a new user message. This allows regenerating "
+            "responses or continuing multi-turn agent loops where the LLM builds upon its "
+            "own previous output."
+        ),
     )
     think: bool = Field(
         default=False,
@@ -35,6 +46,7 @@ class ChatRequest(BaseModel):
                 {
                     "message": None,
                     "think": False,
+                    "description": "Regenerate or continue from existing history",
                 },
             ]
         }
