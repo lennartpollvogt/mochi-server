@@ -7,6 +7,7 @@ This module provides REST API endpoints for:
 - Updating session metadata
 - Deleting sessions
 - Getting session messages
+- Setting/removing system prompts on sessions
 """
 
 import logging
@@ -30,6 +31,7 @@ from mochi_server.models.sessions import (
     ToolSettingsResponse,
     UpdateSessionRequest,
 )
+from mochi_server.models.system_prompts import SetSessionSystemPromptRequest
 from mochi_server.sessions import (
     AgentSettings,
     SessionCreationOptions,
@@ -476,4 +478,104 @@ async def edit_message(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to edit message: {str(e)}",
+        )
+
+
+@router.put(
+    "/{session_id}/system-prompt",
+    status_code=status.HTTP_200_OK,
+    summary="Set or update session system prompt",
+)
+async def set_session_system_prompt(
+    session_id: str,
+    request: SetSessionSystemPromptRequest,
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+) -> None:
+    """Set or update the system prompt for a session.
+
+    If a system prompt already exists, it will be replaced at index 0.
+    If no system prompt exists, a new one will be added at index 0.
+
+    Note: This does NOT truncate the conversation history.
+
+    Args:
+        session_id: The session ID
+        request: System prompt content and optional source file
+        session_manager: Injected SessionManager
+
+    Raises:
+        HTTPException: 404 if session not found
+        HTTPException: 500 if operation fails
+    """
+    try:
+        session = session_manager.get_session(session_id)
+        session.set_system_prompt(request.content, request.source_file)
+        session.save(session_manager.sessions_dir)
+        logger.info(f"Set system prompt for session {session_id}")
+
+    except FileNotFoundError:
+        logger.warning(f"Session {session_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to set system prompt for session {session_id}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to set system prompt: {str(e)}",
+        )
+
+
+@router.delete(
+    "/{session_id}/system-prompt",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove session system prompt",
+)
+async def remove_session_system_prompt(
+    session_id: str,
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+) -> None:
+    """Remove the system prompt from a session.
+
+    If a system prompt exists at index 0, it will be deleted and
+    subsequent messages will shift up.
+
+    Args:
+        session_id: The session ID
+        session_manager: Injected SessionManager
+
+    Raises:
+        HTTPException: 404 if session not found
+        HTTPException: 400 if no system prompt exists
+        HTTPException: 500 if operation fails
+    """
+    try:
+        session = session_manager.get_session(session_id)
+        session.remove_system_prompt()
+        session.save(session_manager.sessions_dir)
+        logger.info(f"Removed system prompt from session {session_id}")
+
+    except FileNotFoundError:
+        logger.warning(f"Session {session_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+    except ValueError as e:
+        # No system prompt to remove
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to remove system prompt from session {session_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to remove system prompt: {str(e)}",
         )

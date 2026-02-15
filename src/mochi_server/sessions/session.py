@@ -186,6 +186,70 @@ class ChatSession:
             datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         )
 
+    def has_system_prompt(self) -> bool:
+        """Check if the session has a system prompt.
+
+        Returns:
+            True if the first message is a system message, False otherwise
+        """
+        return len(self.messages) > 0 and isinstance(self.messages[0], SystemMessage)
+
+    def set_system_prompt(self, content: str, source_file: str | None = None) -> None:
+        """Set or update the system prompt for this session.
+
+        If a system prompt already exists (at index 0), it will be replaced.
+        If no system prompt exists, a new one will be added at index 0.
+
+        Note: This does NOT truncate the conversation history.
+
+        Args:
+            content: The content of the system prompt
+            source_file: Optional filename reference for tracking prompt source
+        """
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        system_message = SystemMessage(
+            content=content,
+            source_file=source_file,
+            message_id=ChatSession.generate_session_id(),
+            timestamp=now,
+        )
+
+        if self.has_system_prompt():
+            # Replace existing system prompt at index 0
+            self.messages[0] = system_message
+            logger.debug(f"Replaced system prompt in session {self.session_id}")
+        else:
+            # Insert new system prompt at the beginning
+            self.messages.insert(0, system_message)
+            logger.debug(f"Added system prompt to session {self.session_id}")
+
+        # Update metadata
+        self.metadata.message_count = len(self.messages)
+        self.metadata.updated_at = now
+
+    def remove_system_prompt(self) -> None:
+        """Remove the system prompt from this session.
+
+        If a system prompt exists (at index 0), it will be deleted and
+        subsequent messages will shift up.
+
+        Raises:
+            ValueError: If no system prompt exists to remove
+        """
+        if not self.has_system_prompt():
+            raise ValueError("No system prompt to remove")
+
+        # Remove the system message at index 0
+        self.messages.pop(0)
+        logger.debug(f"Removed system prompt from session {self.session_id}")
+
+        # Update metadata
+        self.metadata.message_count = len(self.messages)
+        self.metadata.updated_at = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert session to a dictionary for JSON serialization.
 

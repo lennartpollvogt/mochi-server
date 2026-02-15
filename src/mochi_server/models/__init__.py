@@ -4,4 +4,20 @@ This package contains all Pydantic models used for validating and
 serializing API requests and responses across all endpoints.
 """
 
-__all__: list[str] = []
+from mochi_server.models.system_prompts import (
+    CreateSystemPromptRequest,
+    SetSessionSystemPromptRequest,
+    SystemPromptListItem,
+    SystemPromptListResponse,
+    SystemPromptResponse,
+    UpdateSystemPromptRequest,
+)
+
+__all__ = [
+    "CreateSystemPromptRequest",
+    "SetSessionSystemPromptRequest",
+    "SystemPromptListItem",
+    "SystemPromptListResponse",
+    "SystemPromptResponse",
+    "UpdateSystemPromptRequest",
+]

@@ -450,3 +450,202 @@ def test_updated_at_changes():
     session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
 
     assert session.metadata.updated_at != original_updated
+
+
+def test_has_system_prompt_empty_session():
+    """Test has_system_prompt on empty session."""
+    session = ChatSession(session_id="test123", model="llama3:8b")
+    assert not session.has_system_prompt()
+
+
+def test_has_system_prompt_with_system_message():
+    """Test has_system_prompt when system message exists."""
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session = ChatSession(session_id="test123", model="llama3:8b")
+    session.add_message(
+        SystemMessage(content="You are helpful", message_id="msg1", timestamp=now)
+    )
+    assert session.has_system_prompt()
+
+
+def test_has_system_prompt_with_user_message_first():
+    """Test has_system_prompt when first message is not system."""
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session = ChatSession(session_id="test123", model="llama3:8b")
+    session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
+    assert not session.has_system_prompt()
+
+
+def test_set_system_prompt_on_empty_session():
+    """Test setting system prompt on empty session."""
+    session = ChatSession(session_id="test123", model="llama3:8b")
+
+    session.set_system_prompt("You are a helpful assistant.", "helpful.md")
+
+    assert session.has_system_prompt()
+    assert len(session.messages) == 1
+    assert session.messages[0].role == "system"
+    assert session.messages[0].content == "You are a helpful assistant."
+    assert isinstance(session.messages[0], SystemMessage)
+    assert session.messages[0].source_file == "helpful.md"
+    assert session.metadata.message_count == 1
+
+
+def test_set_system_prompt_without_source_file():
+    """Test setting system prompt without source file."""
+    session = ChatSession(session_id="test123", model="llama3:8b")
+
+    session.set_system_prompt("You are a helpful assistant.")
+
+    assert session.has_system_prompt()
+    assert isinstance(session.messages[0], SystemMessage)
+    assert session.messages[0].source_file is None
+
+
+def test_set_system_prompt_replaces_existing():
+    """Test that setting system prompt replaces existing one."""
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session = ChatSession(session_id="test123", model="llama3:8b")
+
+    # Set initial system prompt
+    session.add_message(
+        SystemMessage(
+            content="Old prompt", message_id="msg1", timestamp=now, source_file="old.md"
+        )
+    )
+    session.add_message(UserMessage(content="Hello", message_id="msg2", timestamp=now))
+
+    # Replace system prompt
+    session.set_system_prompt("New prompt", "new.md")
+
+    assert len(session.messages) == 2
+    assert session.messages[0].role == "system"
+    assert session.messages[0].content == "New prompt"
+    assert isinstance(session.messages[0], SystemMessage)
+    assert session.messages[0].source_file == "new.md"
+    assert session.messages[1].role == "user"
+    assert session.messages[1].content == "Hello"
+    assert session.metadata.message_count == 2
+
+
+def test_set_system_prompt_preserves_conversation():
+    """Test that setting system prompt preserves existing conversation."""
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session = ChatSession(session_id="test123", model="llama3:8b")
+
+    # Add conversation without system prompt
+    session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
+    session.add_message(
+        AssistantMessage(
+            content="Hi!", model="llama3:8b", message_id="msg2", timestamp=now
+        )
+    )
+    session.add_message(
+        UserMessage(content="How are you?", message_id="msg3", timestamp=now)
+    )
+
+    # Add system prompt
+    session.set_system_prompt("You are helpful", "helpful.md")
+
+    # System prompt should be at index 0, conversation preserved
+    assert len(session.messages) == 4
+    assert session.messages[0].role == "system"
+    assert session.messages[1].role == "user"
+    assert session.messages[1].content == "Hello"
+    assert session.messages[2].role == "assistant"
+    assert session.messages[3].role == "user"
+    assert session.messages[3].content == "How are you?"
+    assert session.metadata.message_count == 4
+
+
+def test_remove_system_prompt_success():
+    """Test removing system prompt from session."""
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session = ChatSession(session_id="test123", model="llama3:8b")
+
+    session.add_message(
+        SystemMessage(content="You are helpful", message_id="msg1", timestamp=now)
+    )
+    session.add_message(UserMessage(content="Hello", message_id="msg2", timestamp=now))
+
+    session.remove_system_prompt()
+
+    assert not session.has_system_prompt()
+    assert len(session.messages) == 1
+    assert session.messages[0].role == "user"
+    assert session.messages[0].content == "Hello"
+    assert session.metadata.message_count == 1
+
+
+def test_remove_system_prompt_no_prompt_exists():
+    """Test removing system prompt when none exists raises ValueError."""
+    session = ChatSession(session_id="test123", model="llama3:8b")
+
+    with pytest.raises(ValueError, match="No system prompt to remove"):
+        session.remove_system_prompt()
+
+
+def test_remove_system_prompt_with_user_message_first():
+    """Test removing system prompt when first message is user raises ValueError."""
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session = ChatSession(session_id="test123", model="llama3:8b")
+    session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
+
+    with pytest.raises(ValueError, match="No system prompt to remove"):
+        session.remove_system_prompt()
+
+
+def test_set_system_prompt_updates_metadata():
+    """Test that setting system prompt updates metadata timestamps."""
+    session = ChatSession(session_id="test123", model="llama3:8b")
+    original_updated = session.metadata.updated_at
+
+    import time
+
+    time.sleep(0.01)
+
+    session.set_system_prompt("You are helpful")
+
+    assert session.metadata.updated_at != original_updated
+    assert session.metadata.message_count == 1
+
+
+def test_remove_system_prompt_updates_metadata():
+    """Test that removing system prompt updates metadata timestamps."""
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session = ChatSession(session_id="test123", model="llama3:8b")
+    session.add_message(
+        SystemMessage(content="You are helpful", message_id="msg1", timestamp=now)
+    )
+
+    original_updated = session.metadata.updated_at
+
+    import time
+
+    time.sleep(0.01)
+
+    session.remove_system_prompt()
+
+    assert session.metadata.updated_at != original_updated
+    assert session.metadata.message_count == 0
+
+
+def test_system_prompt_save_and_load(tmp_path: Path):
+    """Test that system prompts are persisted correctly."""
+    session = ChatSession(session_id="test123", model="llama3:8b")
+    session.set_system_prompt("You are helpful", "helpful.md")
+
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
+
+    # Save and reload
+    session.save(tmp_path)
+    loaded = ChatSession.load("test123", tmp_path)
+
+    assert loaded.has_system_prompt()
+    assert loaded.messages[0].role == "system"
+    assert loaded.messages[0].content == "You are helpful"
+    assert isinstance(loaded.messages[0], SystemMessage)
+    assert loaded.messages[0].source_file == "helpful.md"
+    assert loaded.messages[1].role == "user"
+    assert loaded.messages[1].content == "Hello"

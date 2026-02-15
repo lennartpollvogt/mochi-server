@@ -10,6 +10,7 @@ from fastapi import HTTPException, Request
 
 from mochi_server.config import MochiServerSettings
 from mochi_server.ollama import OllamaClient
+from mochi_server.services import SystemPromptService
 from mochi_server.sessions import SessionManager
 
 
@@ -74,3 +75,19 @@ def get_session_manager(request: Request) -> SessionManager:
         sessions_dir=settings.resolved_sessions_dir,
         ollama_client=ollama_client,
     )
+
+
+def get_system_prompt_service(request: Request) -> SystemPromptService:
+    """Get a SystemPromptService instance with app configuration.
+
+    Creates a new SystemPromptService for each request, using the
+    system prompts directory from settings.
+
+    Args:
+        request: The FastAPI request object.
+
+    Returns:
+        SystemPromptService: A new SystemPromptService instance.
+    """
+    settings = request.app.state.settings
+    return SystemPromptService(prompts_dir=settings.resolved_system_prompts_dir)
