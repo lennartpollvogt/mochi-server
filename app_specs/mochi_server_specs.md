@@ -1346,10 +1346,18 @@ The JSON schema is as follows:
 
 ### 12.3 Format Version Migration
 
-The session loader must handle migration from older versions:
+**Note:** Migration functionality will be implemented when needed in a future version. The initial implementation (Phase 2) starts with format version 1.3, so there is no legacy data to migrate from.
+
+When format changes occur in future versions, the session loader must handle migration:
 - **1.0 → 1.1:** Add `tool_settings` field
 - **1.1 → 1.2:** Add `context_window_config` field
 - **1.2 → 1.3:** Add `agent_settings` field
+
+Migration logic should:
+1. Detect the format version from loaded JSON
+2. Apply sequential migrations if needed
+3. Save the migrated session in the current format
+4. Log migration events for debugging
 
 ### 12.4 Message Editing
 

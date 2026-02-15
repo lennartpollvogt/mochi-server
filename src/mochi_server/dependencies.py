@@ -10,6 +10,7 @@ from fastapi import HTTPException, Request
 
 from mochi_server.config import MochiServerSettings
 from mochi_server.ollama import OllamaClient
+from mochi_server.sessions import SessionManager
 
 
 @lru_cache
@@ -47,3 +48,29 @@ def get_ollama_client(request: Request) -> OllamaClient:
             detail="Ollama client not initialized",
         )
     return request.app.state.ollama_client
+
+
+def get_session_manager(request: Request) -> SessionManager:
+    """Get a SessionManager instance with app configuration.
+
+    Creates a new SessionManager for each request, using the sessions
+    directory from settings and the Ollama client from app state.
+
+    Args:
+        request: The FastAPI request object.
+
+    Returns:
+        SessionManager: A new SessionManager instance.
+
+    Raises:
+        HTTPException: If the Ollama client is not initialized (503 Service Unavailable).
+    """
+    # Use settings from app.state instead of cached get_settings()
+    # This ensures tests can use their own isolated settings
+    settings = request.app.state.settings
+    ollama_client = get_ollama_client(request)
+
+    return SessionManager(
+        sessions_dir=settings.resolved_sessions_dir,
+        ollama_client=ollama_client,
+    )

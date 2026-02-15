@@ -1,0 +1,405 @@
+"""Sessions router for chat session CRUD operations.
+
+This module provides REST API endpoints for:
+- Creating new sessions
+- Listing all sessions
+- Retrieving session details
+- Updating session metadata
+- Deleting sessions
+- Getting session messages
+"""
+
+import logging
+from dataclasses import asdict
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from mochi_server.dependencies import get_session_manager
+from mochi_server.models.sessions import (
+    AgentSettingsResponse,
+    CreateSessionRequest,
+    MessageResponse,
+    MessagesResponse,
+    SessionDetailResponse,
+    SessionListItem,
+    SessionListResponse,
+    SessionResponse,
+    SummaryResponse,
+    ToolSettingsResponse,
+    UpdateSessionRequest,
+)
+from mochi_server.sessions import (
+    AgentSettings,
+    SessionCreationOptions,
+    SessionManager,
+    ToolSettings,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
+
+
+@router.post(
+    "",
+    response_model=SessionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new session",
+)
+async def create_session(
+    request: CreateSessionRequest,
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+) -> SessionResponse:
+    """Create a new chat session.
+
+    The model will be validated against available Ollama models.
+    Optionally accepts a system prompt and tool/agent settings.
+
+    Args:
+        request: Session creation parameters
+        session_manager: Injected SessionManager
+
+    Returns:
+        Created session metadata
+
+    Raises:
+        HTTPException: 400 if model doesn't exist
+        HTTPException: 502 if Ollama communication fails
+    """
+    try:
+        # Convert request to session creation options
+        tool_settings = None
+        if request.tool_settings:
+            tool_settings = ToolSettings(
+                tools=request.tool_settings.tools,
+                tool_group=request.tool_settings.tool_group,
+                execution_policy=request.tool_settings.execution_policy,
+            )
+
+        agent_settings = None
+        if request.agent_settings:
+            agent_settings = AgentSettings(
+                enabled_agents=request.agent_settings.enabled_agents
+            )
+
+        options = SessionCreationOptions(
+            model=request.model,
+            system_prompt=request.system_prompt,
+            system_prompt_source_file=request.system_prompt_source_file,
+            tool_settings=tool_settings,
+            agent_settings=agent_settings,
+        )
+
+        # Create the session
+        session = await session_manager.create_session(options)
+
+        # Convert to response
+        return SessionResponse(
+            session_id=session.session_id,
+            model=session.model,
+            created_at=session.metadata.created_at,
+            updated_at=session.metadata.updated_at,
+            message_count=session.metadata.message_count,
+            tool_settings=ToolSettingsResponse(
+                tools=session.metadata.tool_settings.tools,
+                tool_group=session.metadata.tool_settings.tool_group,
+                execution_policy=session.metadata.tool_settings.execution_policy,
+            ),
+            agent_settings=AgentSettingsResponse(
+                enabled_agents=session.metadata.agent_settings.enabled_agents
+            ),
+        )
+
+    except ValueError as e:
+        # Model not found or validation error
+        logger.warning(f"Session creation failed: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        # Ollama communication error or other unexpected error
+        logger.error(f"Failed to create session: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to create session: {str(e)}",
+        )
+
+
+@router.get(
+    "",
+    response_model=SessionListResponse,
+    summary="List all sessions",
+)
+async def list_sessions(
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+) -> SessionListResponse:
+    """List all chat sessions, sorted by most recently updated.
+
+    Returns session metadata including summaries and previews.
+
+    Args:
+        session_manager: Injected SessionManager
+
+    Returns:
+        List of session summaries
+    """
+    try:
+        sessions = session_manager.list_sessions()
+
+        # Convert to response format
+        items = []
+        for session in sessions:
+            summary = None
+            if session.metadata.summary:
+                summary = SummaryResponse(
+                    summary=session.metadata.summary.summary,
+                    topics=session.metadata.summary.topics,
+                )
+
+            items.append(
+                SessionListItem(
+                    session_id=session.session_id,
+                    model=session.model,
+                    created_at=session.metadata.created_at,
+                    updated_at=session.metadata.updated_at,
+                    message_count=session.metadata.message_count,
+                    summary=summary,
+                    preview=session.get_preview(),
+                )
+            )
+
+        return SessionListResponse(sessions=items)
+
+    except Exception as e:
+        logger.error(f"Failed to list sessions: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list sessions: {str(e)}",
+        )
+
+
+@router.get(
+    "/{session_id}",
+    response_model=SessionDetailResponse,
+    summary="Get session details",
+)
+async def get_session(
+    session_id: str,
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+) -> SessionDetailResponse:
+    """Get full details of a specific session including message history.
+
+    Args:
+        session_id: The session ID to retrieve
+        session_manager: Injected SessionManager
+
+    Returns:
+        Session details with full message history
+
+    Raises:
+        HTTPException: 404 if session not found
+    """
+    try:
+        session = session_manager.get_session(session_id)
+
+        # Convert messages to response format
+        messages = []
+        for msg in session.messages:
+            msg_dict = asdict(msg)
+            messages.append(MessageResponse(**msg_dict))
+
+        return SessionDetailResponse(
+            session_id=session.session_id,
+            model=session.model,
+            created_at=session.metadata.created_at,
+            updated_at=session.metadata.updated_at,
+            message_count=session.metadata.message_count,
+            tool_settings=ToolSettingsResponse(
+                tools=session.metadata.tool_settings.tools,
+                tool_group=session.metadata.tool_settings.tool_group,
+                execution_policy=session.metadata.tool_settings.execution_policy,
+            ),
+            agent_settings=AgentSettingsResponse(
+                enabled_agents=session.metadata.agent_settings.enabled_agents
+            ),
+            messages=messages,
+        )
+
+    except FileNotFoundError:
+        logger.warning(f"Session {session_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+    except Exception as e:
+        logger.error(f"Failed to get session {session_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get session: {str(e)}",
+        )
+
+
+@router.delete(
+    "/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a session",
+)
+async def delete_session(
+    session_id: str,
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+) -> None:
+    """Delete a chat session permanently.
+
+    Args:
+        session_id: The session ID to delete
+        session_manager: Injected SessionManager
+
+    Raises:
+        HTTPException: 404 if session not found
+    """
+    try:
+        session_manager.delete_session(session_id)
+        logger.info(f"Deleted session {session_id}")
+
+    except FileNotFoundError:
+        logger.warning(f"Session {session_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+    except Exception as e:
+        logger.error(f"Failed to delete session {session_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete session: {str(e)}",
+        )
+
+
+@router.patch(
+    "/{session_id}",
+    response_model=SessionResponse,
+    summary="Update session metadata",
+)
+async def update_session(
+    session_id: str,
+    request: UpdateSessionRequest,
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+) -> SessionResponse:
+    """Update session metadata (model, tool settings, agent settings).
+
+    Args:
+        session_id: The session ID to update
+        request: Updated session parameters
+        session_manager: Injected SessionManager
+
+    Returns:
+        Updated session metadata
+
+    Raises:
+        HTTPException: 404 if session not found
+        HTTPException: 400 if new model doesn't exist
+    """
+    try:
+        # Convert request to domain types
+        tool_settings = None
+        if request.tool_settings:
+            tool_settings = ToolSettings(
+                tools=request.tool_settings.tools,
+                tool_group=request.tool_settings.tool_group,
+                execution_policy=request.tool_settings.execution_policy,
+            )
+
+        agent_settings = None
+        if request.agent_settings:
+            agent_settings = AgentSettings(
+                enabled_agents=request.agent_settings.enabled_agents
+            )
+
+        # Update the session
+        session = await session_manager.update_session(
+            session_id=session_id,
+            model=request.model,
+            tool_settings=tool_settings,
+            agent_settings=agent_settings,
+        )
+
+        # Convert to response
+        return SessionResponse(
+            session_id=session.session_id,
+            model=session.model,
+            created_at=session.metadata.created_at,
+            updated_at=session.metadata.updated_at,
+            message_count=session.metadata.message_count,
+            tool_settings=ToolSettingsResponse(
+                tools=session.metadata.tool_settings.tools,
+                tool_group=session.metadata.tool_settings.tool_group,
+                execution_policy=session.metadata.tool_settings.execution_policy,
+            ),
+            agent_settings=AgentSettingsResponse(
+                enabled_agents=session.metadata.agent_settings.enabled_agents
+            ),
+        )
+
+    except FileNotFoundError:
+        logger.warning(f"Session {session_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+    except ValueError as e:
+        # Model not found or validation error
+        logger.warning(f"Session update failed: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to update session {session_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update session: {str(e)}",
+        )
+
+
+@router.get(
+    "/{session_id}/messages",
+    response_model=MessagesResponse,
+    summary="Get session messages",
+)
+async def get_messages(
+    session_id: str,
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+) -> MessagesResponse:
+    """Get all messages from a session.
+
+    Args:
+        session_id: The session ID
+        session_manager: Injected SessionManager
+
+    Returns:
+        List of messages in the session
+
+    Raises:
+        HTTPException: 404 if session not found
+    """
+    try:
+        messages = session_manager.get_messages(session_id)
+
+        # Convert to response format
+        message_responses = []
+        for msg in messages:
+            msg_dict = asdict(msg)
+            message_responses.append(MessageResponse(**msg_dict))
+
+        return MessagesResponse(messages=message_responses)
+
+    except FileNotFoundError:
+        logger.warning(f"Session {session_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to get messages for session {session_id}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get messages: {str(e)}",
+        )
