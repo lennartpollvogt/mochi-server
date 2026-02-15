@@ -265,8 +265,7 @@ src/mochi_server/
 │   ├── __init__.py          # Export SessionManager, ChatSession, message types
 │   ├── session.py           # ChatSession class, load/save JSON
 │   ├── manager.py           # SessionManager: CRUD operations
-│   ├── types.py             # Message dataclasses, SessionMetadata, SessionCreationOptions
-│   └── migration.py         # Format version migration (1.0 → 1.3)
+│   └── types.py             # Message dataclasses, SessionMetadata, SessionCreationOptions
 │
 ├── models/
 │   └── sessions.py          # CreateSessionRequest, SessionResponse, SessionListResponse, etc.
@@ -278,11 +277,12 @@ tests/
 ├── unit/
 │   ├── test_session.py          # ChatSession load/save
 │   ├── test_session_manager.py  # CRUD operations
-│   └── test_session_migration.py
 ├── integration/
 │   ├── __init__.py
 │   └── test_session_api.py      # Full endpoint tests
 ```
+
+**Note on Migration:** Format version migration (`migration.py`) is intentionally NOT included in Phase 2. Since this is the initial implementation, we start with format version 1.3 and have no legacy data to migrate. Migration logic will be added in a future phase when the format actually changes.
 
 ### Modified Files
 
@@ -311,7 +311,7 @@ tests/
 - The JSON format exactly matches the spec's schema (format version `1.3`).
 - Message types are Python dataclasses: `UserMessage`, `SystemMessage`, `AssistantMessage`, `ToolMessage`.
 - Messages are serialized via `dataclasses.asdict()`.
-- Format migration handles 1.0 → 1.1 → 1.2 → 1.3 for reading older session files.
+- **Format version 1.3 from day one** - no migration needed since this is the initial implementation.
 - `POST /sessions` requires a `model` field. The router validates the model exists by calling the Ollama client.
 - `tool_settings` and `agent_settings` are accepted in `POST /sessions` and stored in metadata, but not acted upon yet (those features come in later phases).
 - Session listing returns summaries and previews (preview = first user message content, truncated).
@@ -320,9 +320,9 @@ tests/
 
 - `ChatSession`: create, add messages, save to disk, load from disk, verify round-trip fidelity.
 - `SessionManager`: create, list (sorted correctly), get, delete, not-found errors.
-- Format migration: test loading files in format 1.0, 1.1, 1.2 and verify they're migrated to 1.3.
 - API integration: test all endpoints with `httpx.AsyncClient`.
 - All file I/O tests use `tmp_path`.
+- **Migration tests skipped** - will be added when format changes require migration logic.
 
 ### Definition of Done
 
@@ -352,9 +352,9 @@ uv run pytest tests/
 ### Review & Refactor
 
 - Is the session JSON format exactly right?
-- Does the migration logic handle edge cases?
 - Is `SessionManager` easy to test in isolation?
 - Should we adjust the spec based on anything we learned about session storage?
+- When should we implement migration logic? (Answer: when we first change the format in a future phase)
 
 ---
 

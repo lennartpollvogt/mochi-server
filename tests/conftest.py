@@ -12,7 +12,7 @@ from mochi_server import create_app
 from mochi_server.config import MochiServerSettings
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")
 def test_settings(tmp_path):
     """Create test settings with isolated temporary directories.
 
@@ -37,7 +37,7 @@ def test_settings(tmp_path):
     )
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")
 def test_app(test_settings):
     """Create a FastAPI test application instance.
 
