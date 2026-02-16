@@ -795,3 +795,53 @@ async def test_remove_system_prompt_session_not_found(async_client, test_app):
     response = await async_client.delete("/api/v1/sessions/nonexistent/system-prompt")
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_system_prompt_from_file(async_client, test_app):
+    """Test creating a session with system prompt loaded from file."""
+    # Create a system prompt file
+    await async_client.post(
+        "/api/v1/system-prompts",
+        json={
+            "filename": "helpful.md",
+            "content": "You are a helpful assistant from file.",
+        },
+    )
+
+    # Create session with only source_file (no content)
+    response = await async_client.post(
+        "/api/v1/sessions",
+        json={
+            "model": "llama3:8b",
+            "system_prompt": None,
+            "system_prompt_source_file": "helpful.md",
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["message_count"] == 1
+
+    # Verify the system prompt was loaded from file
+    session_response = await async_client.get(f"/api/v1/sessions/{data['session_id']}")
+    session_data = session_response.json()
+    assert len(session_data["messages"]) == 1
+    assert session_data["messages"][0]["role"] == "system"
+    assert session_data["messages"][0]["content"] == "You are a helpful assistant from file."
+    assert session_data["messages"][0]["source_file"] == "helpful.md"
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_nonexistent_system_prompt_file(async_client):
+    """Test creating a session with nonexistent system prompt file returns 404."""
+    response = await async_client.post(
+        "/api/v1/sessions",
+        json={
+            "model": "llama3:8b",
+            "system_prompt": None,
+            "system_prompt_source_file": "nonexistent.md",
+        },
+    )
+
+    assert response.status_code == 404

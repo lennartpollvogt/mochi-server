@@ -16,7 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from mochi_server.dependencies import get_session_manager
+from mochi_server.dependencies import get_session_manager, get_system_prompt_service
 from mochi_server.models.sessions import (
     AgentSettingsResponse,
     CreateSessionRequest,
@@ -32,6 +32,7 @@ from mochi_server.models.sessions import (
     UpdateSessionRequest,
 )
 from mochi_server.models.system_prompts import SetSessionSystemPromptRequest
+from mochi_server.services import SystemPromptService
 from mochi_server.sessions import (
     AgentSettings,
     SessionCreationOptions,
@@ -53,6 +54,7 @@ router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 async def create_session(
     request: CreateSessionRequest,
     session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+    prompt_service: Annotated[SystemPromptService, Depends(get_system_prompt_service)],
 ) -> SessionResponse:
     """Create a new chat session.
 
@@ -62,6 +64,7 @@ async def create_session(
     Args:
         request: Session creation parameters
         session_manager: Injected SessionManager
+        prompt_service: Injected SystemPromptService
 
     Returns:
         Created session metadata
@@ -86,10 +89,34 @@ async def create_session(
                 enabled_agents=request.agent_settings.enabled_agents
             )
 
+        # Load system prompt from file if source_file is provided but content is not
+        system_prompt = request.system_prompt
+        system_prompt_source_file = request.system_prompt_source_file
+
+        if not system_prompt and system_prompt_source_file:
+            try:
+                system_prompt = prompt_service.get_prompt(system_prompt_source_file)
+                logger.info(
+                    f"Loaded system prompt from file: {system_prompt_source_file}"
+                )
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"System prompt file '{system_prompt_source_file}' not found",
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to load system prompt file '{system_prompt_source_file}': {e}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to load system prompt file: {str(e)}",
+                )
+
         options = SessionCreationOptions(
             model=request.model,
-            system_prompt=request.system_prompt,
-            system_prompt_source_file=request.system_prompt_source_file,
+            system_prompt=system_prompt,
+            system_prompt_source_file=system_prompt_source_file,
             tool_settings=tool_settings,
             agent_settings=agent_settings,
         )
@@ -114,6 +141,9 @@ async def create_session(
             ),
         )
 
+    except HTTPException:
+        # Re-raise HTTPException to preserve status code
+        raise
     except ValueError as e:
         # Model not found or validation error
         logger.warning(f"Session creation failed: {e}")
