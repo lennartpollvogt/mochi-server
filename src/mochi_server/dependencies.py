@@ -10,7 +10,7 @@ from fastapi import HTTPException, Request
 
 from mochi_server.config import MochiServerSettings
 from mochi_server.ollama import OllamaClient
-from mochi_server.services import SystemPromptService
+from mochi_server.services import DynamicContextWindowService, SystemPromptService
 from mochi_server.sessions import SessionManager
 
 
@@ -91,3 +91,22 @@ def get_system_prompt_service(request: Request) -> SystemPromptService:
     """
     settings = request.app.state.settings
     return SystemPromptService(prompts_dir=settings.resolved_system_prompts_dir)
+
+
+def get_context_window_service(request: Request) -> DynamicContextWindowService:
+    """Get a DynamicContextWindowService instance with app configuration.
+
+    Creates a new DynamicContextWindowService for each request, using the
+    Ollama client from app state.
+
+    Args:
+        request: The FastAPI request object.
+
+    Returns:
+        DynamicContextWindowService: A new DynamicContextWindowService instance.
+
+    Raises:
+        HTTPException: If the Ollama client is not initialized (503 Service Unavailable).
+    """
+    ollama_client = get_ollama_client(request)
+    return DynamicContextWindowService(ollama_client=ollama_client)

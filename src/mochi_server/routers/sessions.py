@@ -16,7 +16,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from mochi_server.dependencies import get_session_manager, get_system_prompt_service
+from mochi_server.dependencies import (
+    get_context_window_service,
+    get_session_manager,
+    get_system_prompt_service,
+)
+from mochi_server.models.status import ContextWindowStatus, SessionStatusResponse
+from mochi_server.services.context_window import DynamicContextWindowService
 from mochi_server.models.sessions import (
     AgentSettingsResponse,
     CreateSessionRequest,
@@ -609,3 +615,94 @@ async def remove_session_system_prompt(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to remove system prompt: {str(e)}",
         )
+
+
+@router.get(
+    "/{session_id}/status",
+    response_model=SessionStatusResponse,
+    summary="Get session status",
+)
+async def get_session_status(
+    session_id: str,
+    session_manager: Annotated[SessionManager, Depends(get_session_manager)],
+    context_window_service: Annotated[
+        DynamicContextWindowService, Depends(get_context_window_service)
+    ],
+    system_prompt_service: Annotated[
+        SystemPromptService, Depends(get_system_prompt_service)
+    ],
+) -> SessionStatusResponse:
+    """Get full status information for a session.
+
+    This endpoint provides comprehensive session state information including:
+    - Basic session info (ID, model, message count)
+    - Context window configuration and status
+    - Tool settings and active tools
+    - Agent settings and enabled agents
+    - System prompt file (if any)
+    - Conversation summary (if available)
+
+    Args:
+        session_id: The session ID
+        session_manager: Injected SessionManager
+        context_window_service: Injected DynamicContextWindowService
+        system_prompt_service: Injected SystemPromptService
+
+    Returns:
+        SessionStatusResponse with full session status
+
+    Raises:
+        HTTPException: 404 if session not found
+    """
+    try:
+        session = session_manager.get_session(session_id)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+
+    # Get model max context
+    model_max_context = await context_window_service.get_model_max_context(
+        session.model
+    )
+
+    # Get system prompt file (from first message if it's a system message)
+    system_prompt_file: str | None = None
+    if session.messages:
+        first_msg = session.messages[0]
+        if hasattr(first_msg, 'role') and first_msg.role == 'system':
+            # Access source_file with type cast since we know it's a SystemMessage
+            source_file = getattr(first_msg, 'source_file', None)
+            if source_file is not None:
+                system_prompt_file = str(source_file)
+
+    # Build context window status with proper field mapping
+    ctx_config = session.metadata.context_window_config
+    context_window_status = ContextWindowStatus(
+        dynamic_enabled=ctx_config.dynamic_enabled,
+        current_window=ctx_config.current_window,
+        model_max_context=model_max_context,
+        last_adjustment_reason=ctx_config.last_adjustment,
+        manual_override=ctx_config.manual_override,
+    )
+
+    # Build the status response
+    from mochi_server.models.status import ConversationSummaryStatus
+    
+    response = SessionStatusResponse(
+        session_id=session.session_id,
+        model=session.model,
+        message_count=session.metadata.message_count,
+        context_window=context_window_status,
+        tools_enabled=bool(session.metadata.tool_settings.tools or session.metadata.tool_settings.tool_group),
+        active_tools=session.metadata.tool_settings.tools or [],
+        execution_policy=session.metadata.tool_settings.execution_policy,
+        agents_enabled=bool(session.metadata.agent_settings.enabled_agents),
+        enabled_agents=session.metadata.agent_settings.enabled_agents,
+        system_prompt_file=system_prompt_file,
+        summary=ConversationSummaryStatus(**session.metadata.summary.__dict__) if session.metadata.summary else None,
+        summary_model=session.metadata.summary_model,
+    )
+
+    return response

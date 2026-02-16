@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
-from mochi_server.dependencies import get_ollama_client
+from mochi_server.dependencies import get_context_window_service, get_ollama_client
 from mochi_server.models.chat import (
     ChatRequest,
     ChatResponse,
@@ -23,6 +23,7 @@ from mochi_server.models.chat import (
     MessageResponse,
 )
 from mochi_server.ollama.client import OllamaClient
+from mochi_server.services.context_window import DynamicContextWindowService
 from mochi_server.sessions.session import ChatSession
 from mochi_server.sessions.types import AssistantMessage, UserMessage
 
@@ -62,6 +63,7 @@ async def _collect_streaming_response(
     ollama_client: OllamaClient,
     model: str,
     messages: list[dict],
+    options: dict | None = None,
 ) -> tuple[str, dict]:
     """Collect a complete response from Ollama's streaming API.
 
@@ -69,6 +71,7 @@ async def _collect_streaming_response(
         ollama_client: The Ollama client instance
         model: Model name to use
         messages: Messages in Ollama format
+        options: Optional model parameters (e.g., num_ctx for context window)
 
     Returns:
         Tuple of (complete_content, final_chunk_metadata)
@@ -83,6 +86,7 @@ async def _collect_streaming_response(
         async for chunk in ollama_client.chat_stream(
             model=model,
             messages=messages,
+            options=options,
         ):
             # Accumulate content
             message = chunk.get("message", {})
@@ -129,6 +133,9 @@ async def chat_non_streaming(
     request_body: ChatRequest,
     request: Request,
     ollama_client: OllamaClient = Depends(get_ollama_client),
+    context_window_service: DynamicContextWindowService = Depends(
+        get_context_window_service
+    ),
 ) -> ChatResponse:
     """Send a message to a session and receive a complete response.
 
@@ -227,11 +234,38 @@ async def chat_non_streaming(
         f"Sending {len(ollama_messages)} messages to Ollama with model {session.model}"
     )
 
+    # Calculate context window before sending to Ollama
+    context_config = session.metadata.context_window_config
+    model_max_context = await context_window_service.get_model_max_context(
+        session.model
+    )
+
+    # Estimate token usage from message count (rough approximation)
+    estimated_usage = len(session.messages) * 50  # rough estimate
+
+    calculation = context_window_service.calculate_context_window(
+        model=session.model,
+        current_window=context_config.current_window,
+        dynamic_enabled=context_config.dynamic_enabled,
+        manual_override=context_config.manual_override,
+        model_max_context=model_max_context,
+        usage_tokens=estimated_usage,
+        last_adjustment_reason=context_config.last_adjustment,
+    )
+
+    # Get num_ctx options to pass to Ollama
+    ollama_options = context_window_service.get_num_ctx_options(
+        context_window=calculation.current_window,
+        dynamic_enabled=context_config.dynamic_enabled,
+        manual_override=context_config.manual_override,
+    )
+
     # Get the streaming response and collect it
     content, final_chunk = await _collect_streaming_response(
         ollama_client=ollama_client,
         model=session.model,
         messages=ollama_messages,
+        options=ollama_options,
     )
 
     logger.info(f"Received complete response: {len(content)} characters")
@@ -249,6 +283,36 @@ async def chat_non_streaming(
 
     # Add assistant message to session
     session.add_message(assistant_message)
+
+    # Update context window config based on actual usage
+    prompt_tokens = final_chunk.get('prompt_eval_count', 0)
+    eval_tokens = final_chunk.get('eval_count', 0)
+    total_tokens = prompt_tokens + eval_tokens
+
+    # Recalculate context window based on actual token usage
+    final_calculation = context_window_service.calculate_context_window(
+        model=session.model,
+        current_window=calculation.current_window,
+        dynamic_enabled=context_config.dynamic_enabled,
+        manual_override=context_config.manual_override,
+        model_max_context=model_max_context,
+        usage_tokens=total_tokens,
+        last_adjustment_reason=calculation.reason,
+    )
+
+    # Update session metadata with new context window config
+    session.metadata.context_window_config.current_window = final_calculation.current_window
+    session.metadata.context_window_config.last_adjustment = final_calculation.reason
+    
+    # Add to adjustment history (keep last 10)
+    adjustment_entry = {
+        'reason': final_calculation.reason,
+        'window': final_calculation.current_window,
+        'usage_tokens': total_tokens,
+    }
+    session.metadata.context_window_config.adjustment_history.append(adjustment_entry)
+    if len(session.metadata.context_window_config.adjustment_history) > 10:
+        session.metadata.context_window_config.adjustment_history = session.metadata.context_window_config.adjustment_history[-10:]
 
     # Save the session
     try:
@@ -305,6 +369,9 @@ async def chat_streaming(
     request_body: ChatRequest,
     request: Request,
     ollama_client: OllamaClient = Depends(get_ollama_client),
+    context_window_service: DynamicContextWindowService = Depends(
+        get_context_window_service
+    ),
 ) -> EventSourceResponse:
     """Stream a chat response via Server-Sent Events (SSE).
 
@@ -407,6 +474,32 @@ async def chat_streaming(
         f"Starting streaming chat for session {session_id} with {len(ollama_messages)} messages"
     )
 
+    # Calculate context window before streaming
+    context_config = session.metadata.context_window_config
+    model_max_context = await context_window_service.get_model_max_context(
+        session.model
+    )
+    
+    # Estimate token usage
+    estimated_usage = len(session.messages) * 50
+    
+    calculation = context_window_service.calculate_context_window(
+        model=session.model,
+        current_window=context_config.current_window,
+        dynamic_enabled=context_config.dynamic_enabled,
+        manual_override=context_config.manual_override,
+        model_max_context=model_max_context,
+        usage_tokens=estimated_usage,
+        last_adjustment_reason=context_config.last_adjustment,
+    )
+    
+    # Get num_ctx options
+    ollama_options = context_window_service.get_num_ctx_options(
+        context_window=calculation.current_window,
+        dynamic_enabled=context_config.dynamic_enabled,
+        manual_override=context_config.manual_override,
+    )
+
     async def event_generator():
         """Generate SSE events from Ollama streaming response."""
         content_parts = []
@@ -418,6 +511,7 @@ async def chat_streaming(
             async for chunk in ollama_client.chat_stream(
                 model=session.model,
                 messages=ollama_messages,
+                options=ollama_options,
             ):
                 # Check if client disconnected
                 if await request.is_disconnected():
@@ -465,6 +559,38 @@ async def chat_streaming(
 
             session.add_message(assistant_message)
 
+            # Update context window config based on actual usage
+            prompt_tokens = (
+                final_chunk.get('prompt_eval_count', 0) if final_chunk else 0
+            )
+            eval_tokens = final_chunk.get('eval_count', 0) if final_chunk else 0
+            total_tokens = prompt_tokens + eval_tokens
+            
+            # Recalculate context window based on actual token usage
+            final_calculation = context_window_service.calculate_context_window(
+                model=session.model,
+                current_window=calculation.current_window,
+                dynamic_enabled=context_config.dynamic_enabled,
+                manual_override=context_config.manual_override,
+                model_max_context=model_max_context,
+                usage_tokens=total_tokens,
+                last_adjustment_reason=calculation.reason,
+            )
+            
+            # Update session metadata with new context window config
+            session.metadata.context_window_config.current_window = final_calculation.current_window
+            session.metadata.context_window_config.last_adjustment = final_calculation.reason
+            
+            # Add to adjustment history
+            adjustment_entry = {
+                'reason': final_calculation.reason,
+                'window': final_calculation.current_window,
+                'usage_tokens': total_tokens,
+            }
+            session.metadata.context_window_config.adjustment_history.append(adjustment_entry)
+            if len(session.metadata.context_window_config.adjustment_history) > 10:
+                session.metadata.context_window_config.adjustment_history = session.metadata.context_window_config.adjustment_history[-10:]
+
             # Save session
             try:
                 session.save(sessions_dir)
@@ -482,13 +608,7 @@ async def chat_streaming(
                 }
                 return
 
-            # Calculate context window info
-            prompt_tokens = (
-                final_chunk.get("prompt_eval_count", 0) if final_chunk else 0
-            )
-            eval_tokens = final_chunk.get("eval_count", 0) if final_chunk else 0
-            total_tokens = prompt_tokens + eval_tokens
-
+            # Calculate context window info (tokens already calculated above)
             context_window = ContextWindowInfo(
                 current_window=session.metadata.context_window_config.current_window,
                 usage_tokens=total_tokens,
