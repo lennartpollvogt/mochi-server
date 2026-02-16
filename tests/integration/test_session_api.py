@@ -562,3 +562,286 @@ async def test_update_multiple_fields(async_client, test_app):
     assert data["model"] == "qwen3:14b"
     assert data["tool_settings"]["tools"] == ["tool1"]
     assert data["agent_settings"]["enabled_agents"] == ["agent1"]
+
+
+@pytest.mark.asyncio
+async def test_set_session_system_prompt(async_client, test_app, mock_ollama_client):
+    """Test setting a system prompt on a session."""
+    # Create session
+    create_response = await async_client.post(
+        "/api/v1/sessions",
+        json={"model": "llama3:8b"},
+    )
+    session_id = create_response.json()["session_id"]
+
+    # Set system prompt
+    response = await async_client.put(
+        f"/api/v1/sessions/{session_id}/system-prompt",
+        json={
+            "content": "You are a helpful assistant.",
+            "source_file": "helpful.md",
+        },
+    )
+
+    assert response.status_code == 200
+
+    # Verify system prompt was added
+    get_response = await async_client.get(f"/api/v1/sessions/{session_id}")
+    data = get_response.json()
+    assert len(data["messages"]) == 1
+    assert data["messages"][0]["role"] == "system"
+    assert data["messages"][0]["content"] == "You are a helpful assistant."
+    assert data["messages"][0]["source_file"] == "helpful.md"
+
+
+@pytest.mark.asyncio
+async def test_set_session_system_prompt_without_source_file(
+    async_client, test_app, mock_ollama_client
+):
+    """Test setting a system prompt without source file."""
+    # Create session
+    create_response = await async_client.post(
+        "/api/v1/sessions",
+        json={"model": "llama3:8b"},
+    )
+    session_id = create_response.json()["session_id"]
+
+    # Set system prompt without source file
+    response = await async_client.put(
+        f"/api/v1/sessions/{session_id}/system-prompt",
+        json={"content": "You are a helpful assistant."},
+    )
+
+    assert response.status_code == 200
+
+    # Verify system prompt was added
+    get_response = await async_client.get(f"/api/v1/sessions/{session_id}")
+    data = get_response.json()
+    assert data["messages"][0]["role"] == "system"
+    assert data["messages"][0]["source_file"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_session_system_prompt(async_client, test_app, mock_ollama_client):
+    """Test updating an existing system prompt."""
+    # Create session with system prompt
+    create_response = await async_client.post(
+        "/api/v1/sessions",
+        json={
+            "model": "llama3:8b",
+            "system_prompt": "Old prompt",
+            "system_prompt_source_file": "old.md",
+        },
+    )
+    session_id = create_response.json()["session_id"]
+
+    # Update system prompt
+    response = await async_client.put(
+        f"/api/v1/sessions/{session_id}/system-prompt",
+        json={
+            "content": "New prompt",
+            "source_file": "new.md",
+        },
+    )
+
+    assert response.status_code == 200
+
+    # Verify system prompt was updated
+    get_response = await async_client.get(f"/api/v1/sessions/{session_id}")
+    data = get_response.json()
+    assert len(data["messages"]) == 1
+    assert data["messages"][0]["role"] == "system"
+    assert data["messages"][0]["content"] == "New prompt"
+    assert data["messages"][0]["source_file"] == "new.md"
+
+
+@pytest.mark.asyncio
+async def test_set_system_prompt_on_session_with_messages(
+    async_client, test_app, mock_ollama_client
+):
+    """Test that setting system prompt on a session that already has messages inserts at index 0."""
+    # Create session
+    create_response = await async_client.post(
+        "/api/v1/sessions",
+        json={"model": "llama3:8b"},
+    )
+    session_id = create_response.json()["session_id"]
+
+    # Manually add a user message using edit endpoint
+    # (avoiding chat to work around mock issues)
+    from datetime import datetime, timezone
+
+    from mochi_server.sessions import ChatSession, UserMessage
+
+    settings = test_app.state.settings
+    session = ChatSession.load(session_id, settings.resolved_sessions_dir)
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
+    session.save(settings.resolved_sessions_dir)
+
+    # Set system prompt
+    response = await async_client.put(
+        f"/api/v1/sessions/{session_id}/system-prompt",
+        json={"content": "You are helpful"},
+    )
+
+    assert response.status_code == 200
+
+    # Verify system prompt was inserted at index 0 and user message preserved
+    get_response = await async_client.get(f"/api/v1/sessions/{session_id}")
+    data = get_response.json()
+    assert len(data["messages"]) == 2  # system, user
+    assert data["messages"][0]["role"] == "system"
+    assert data["messages"][0]["content"] == "You are helpful"
+    assert data["messages"][1]["role"] == "user"
+    assert data["messages"][1]["content"] == "Hello"
+
+
+@pytest.mark.asyncio
+async def test_remove_session_system_prompt(async_client, test_app, mock_ollama_client):
+    """Test removing a system prompt from a session."""
+    # Create session with system prompt
+    create_response = await async_client.post(
+        "/api/v1/sessions",
+        json={
+            "model": "llama3:8b",
+            "system_prompt": "You are helpful",
+        },
+    )
+    session_id = create_response.json()["session_id"]
+
+    # Remove system prompt
+    response = await async_client.delete(f"/api/v1/sessions/{session_id}/system-prompt")
+
+    assert response.status_code == 204
+
+    # Verify system prompt was removed
+    get_response = await async_client.get(f"/api/v1/sessions/{session_id}")
+    data = get_response.json()
+    assert len(data["messages"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_remove_system_prompt_with_other_messages(
+    async_client, test_app, mock_ollama_client
+):
+    """Test removing system prompt preserves other messages."""
+    # Create session with system prompt
+    create_response = await async_client.post(
+        "/api/v1/sessions",
+        json={
+            "model": "llama3:8b",
+            "system_prompt": "You are helpful",
+        },
+    )
+    session_id = create_response.json()["session_id"]
+
+    # Manually add a user message
+    from datetime import datetime, timezone
+
+    from mochi_server.sessions import ChatSession, UserMessage
+
+    settings = test_app.state.settings
+    session = ChatSession.load(session_id, settings.resolved_sessions_dir)
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    session.add_message(UserMessage(content="Hello", message_id="msg1", timestamp=now))
+    session.save(settings.resolved_sessions_dir)
+
+    # Remove system prompt
+    response = await async_client.delete(f"/api/v1/sessions/{session_id}/system-prompt")
+
+    assert response.status_code == 204
+
+    # Verify user message was preserved
+    get_response = await async_client.get(f"/api/v1/sessions/{session_id}")
+    data = get_response.json()
+    assert len(data["messages"]) == 1  # only user message (no system)
+    assert data["messages"][0]["role"] == "user"
+    assert data["messages"][0]["content"] == "Hello"
+
+
+@pytest.mark.asyncio
+async def test_remove_system_prompt_none_exists(
+    async_client, test_app, mock_ollama_client
+):
+    """Test removing system prompt when none exists returns 400."""
+    # Create session without system prompt
+    create_response = await async_client.post(
+        "/api/v1/sessions",
+        json={"model": "llama3:8b"},
+    )
+    session_id = create_response.json()["session_id"]
+
+    # Try to remove system prompt
+    response = await async_client.delete(f"/api/v1/sessions/{session_id}/system-prompt")
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_set_system_prompt_session_not_found(async_client, test_app):
+    """Test setting system prompt on non-existent session returns 404."""
+    response = await async_client.put(
+        "/api/v1/sessions/nonexistent/system-prompt",
+        json={"content": "You are helpful"},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_remove_system_prompt_session_not_found(async_client, test_app):
+    """Test removing system prompt from non-existent session returns 404."""
+    response = await async_client.delete("/api/v1/sessions/nonexistent/system-prompt")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_system_prompt_from_file(async_client, test_app):
+    """Test creating a session with system prompt loaded from file."""
+    # Create a system prompt file
+    await async_client.post(
+        "/api/v1/system-prompts",
+        json={
+            "filename": "helpful.md",
+            "content": "You are a helpful assistant from file.",
+        },
+    )
+
+    # Create session with only source_file (no content)
+    response = await async_client.post(
+        "/api/v1/sessions",
+        json={
+            "model": "llama3:8b",
+            "system_prompt": None,
+            "system_prompt_source_file": "helpful.md",
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["message_count"] == 1
+
+    # Verify the system prompt was loaded from file
+    session_response = await async_client.get(f"/api/v1/sessions/{data['session_id']}")
+    session_data = session_response.json()
+    assert len(session_data["messages"]) == 1
+    assert session_data["messages"][0]["role"] == "system"
+    assert session_data["messages"][0]["content"] == "You are a helpful assistant from file."
+    assert session_data["messages"][0]["source_file"] == "helpful.md"
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_nonexistent_system_prompt_file(async_client):
+    """Test creating a session with nonexistent system prompt file returns 404."""
+    response = await async_client.post(
+        "/api/v1/sessions",
+        json={
+            "model": "llama3:8b",
+            "system_prompt": None,
+            "system_prompt_source_file": "nonexistent.md",
+        },
+    )
+
+    assert response.status_code == 404
