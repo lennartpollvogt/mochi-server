@@ -31,7 +31,6 @@ Mochi-server provides a REST API with Server-Sent Events (SSE) streaming for cha
 - **Tools System**: Define Python functions that LLMs can invoke during conversations
 - **Session Management**: Persistent chat sessions stored as JSON files
 - **Context Window Management**: Dynamic context window adjustment to prevent token overflow
-- **Context Window Management**: Dynamic context window adjustment to prevent token overflow
 
 ---
 
