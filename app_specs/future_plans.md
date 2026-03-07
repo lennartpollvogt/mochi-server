@@ -1,7 +1,3 @@
-- [ ] provide used context window in metadata
-- [ ] API endpoints for CRON jobs. I can be decided that a cron job remains chat history or always starts from scratch.
-  - [ ] create new cron job
-  - [ ] delete cron job
-  - [ ] update cron job
-- [ ] let user change ollama host
-- [ ] allow setting tool folder from API endpoint
+- [ ] change summarization approach to just summarize the conversation by focusing on learnings, common mistakes, user preferences and best practices
+- [ ] integrate mochi-cycle into mochi-server to allow chat the assistant or an agent create CRON jobs for agents. 
+- [ ] add `resources/` folder and endpoint `review`, which let's an LLM review all summaries of latest chat conversations (since last time) and update the file `KNOWLEDGE.md` in `resources/`.
