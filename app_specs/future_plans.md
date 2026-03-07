@@ -5,3 +5,4 @@
   - [ ] update cron job
 - [ ] let user change ollama host
 - [ ] make directories `src`, `tests`, `app_specs`, `chat_sessions` and files `pyproject.toml`, `README.md`, `LICENSE` and `.gitignore` tabu for
+- [ ] allow setting tool folder from API endpoint

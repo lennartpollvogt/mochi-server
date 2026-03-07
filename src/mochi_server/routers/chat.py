@@ -1,9 +1,10 @@
 """Chat API endpoints.
 
 This module provides endpoints for chat interactions with sessions,
-including non-streaming and streaming responses via SSE.
+including non-streaming and streaming responses via SSE, and tool execution.
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -11,7 +12,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
-from mochi_server.dependencies import get_context_window_service, get_ollama_client
+from mochi_server.dependencies import (
+    get_context_window_service,
+    get_ollama_client,
+    get_tool_execution_service,
+)
 from mochi_server.models.chat import (
     ChatRequest,
     ChatResponse,
@@ -21,15 +26,27 @@ from mochi_server.models.chat import (
     ErrorEvent,
     MessageCompleteEvent,
     MessageResponse,
+    ThinkingDeltaEvent,
+    ToolCallConfirmationRequiredEvent,
+    ToolCallEvent,
+    ToolContinuationStartEvent,
+    ToolResultEvent,
 )
+from mochi_server.models.tools import ToolConfirmationRequest, ToolConfirmationResponse
 from mochi_server.ollama.client import OllamaClient
 from mochi_server.services.context_window import DynamicContextWindowService
 from mochi_server.sessions.session import ChatSession
-from mochi_server.sessions.types import AssistantMessage, UserMessage
+from mochi_server.sessions.types import AssistantMessage, ToolMessage, UserMessage
+from mochi_server.tools import ToolExecutionService
+from mochi_server.tools.config import requires_confirmation
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
+
+# Global dictionary to store pending confirmations
+# Key: confirmation_id, Value: {"event": asyncio.Event, "approved": bool | None, "tool_call": dict}
+_pending_confirmations: dict[str, dict] = {}
 
 
 def _convert_messages_to_ollama_format(messages: list) -> list[dict]:
@@ -285,8 +302,8 @@ async def chat_non_streaming(
     session.add_message(assistant_message)
 
     # Update context window config based on actual usage
-    prompt_tokens = final_chunk.get('prompt_eval_count', 0)
-    eval_tokens = final_chunk.get('eval_count', 0)
+    prompt_tokens = final_chunk.get("prompt_eval_count", 0)
+    eval_tokens = final_chunk.get("eval_count", 0)
     total_tokens = prompt_tokens + eval_tokens
 
     # Recalculate context window based on actual token usage
@@ -301,18 +318,22 @@ async def chat_non_streaming(
     )
 
     # Update session metadata with new context window config
-    session.metadata.context_window_config.current_window = final_calculation.current_window
+    session.metadata.context_window_config.current_window = (
+        final_calculation.current_window
+    )
     session.metadata.context_window_config.last_adjustment = final_calculation.reason
-    
+
     # Add to adjustment history (keep last 10)
     adjustment_entry = {
-        'reason': final_calculation.reason,
-        'window': final_calculation.current_window,
-        'usage_tokens': total_tokens,
+        "reason": final_calculation.reason,
+        "window": final_calculation.current_window,
+        "usage_tokens": total_tokens,
     }
     session.metadata.context_window_config.adjustment_history.append(adjustment_entry)
     if len(session.metadata.context_window_config.adjustment_history) > 10:
-        session.metadata.context_window_config.adjustment_history = session.metadata.context_window_config.adjustment_history[-10:]
+        session.metadata.context_window_config.adjustment_history = (
+            session.metadata.context_window_config.adjustment_history[-10:]
+        )
 
     # Save the session
     try:
@@ -372,6 +393,7 @@ async def chat_streaming(
     context_window_service: DynamicContextWindowService = Depends(
         get_context_window_service
     ),
+    tool_execution_service: ToolExecutionService = Depends(get_tool_execution_service),
 ) -> EventSourceResponse:
     """Stream a chat response via Server-Sent Events (SSE).
 
@@ -479,10 +501,10 @@ async def chat_streaming(
     model_max_context = await context_window_service.get_model_max_context(
         session.model
     )
-    
+
     # Estimate token usage
     estimated_usage = len(session.messages) * 50
-    
+
     calculation = context_window_service.calculate_context_window(
         model=session.model,
         current_window=context_config.current_window,
@@ -492,7 +514,7 @@ async def chat_streaming(
         usage_tokens=estimated_usage,
         last_adjustment_reason=context_config.last_adjustment,
     )
-    
+
     # Get num_ctx options
     ollama_options = context_window_service.get_num_ctx_options(
         context_window=calculation.current_window,
@@ -500,11 +522,47 @@ async def chat_streaming(
         manual_override=context_config.manual_override,
     )
 
+    # Get tool settings and schemas
+    tool_settings = session.metadata.tool_settings
+    active_tools = tool_settings.tools or []
+    execution_policy = tool_settings.execution_policy
+    tool_group = tool_settings.tool_group
+
+    # Get tool schemas if tools are enabled
+    tools = None
+    if active_tools or tool_group:
+        # Import here to avoid circular imports
+        from mochi_server.dependencies import get_tool_schema_service
+
+        tool_schema_service = get_tool_schema_service(request)
+        all_schemas = tool_schema_service.get_all_tool_schemas()
+
+        # Filter to active tools
+        if active_tools:
+            tools = [
+                all_schemas.get(name) for name in active_tools if name in all_schemas
+            ]
+            tools = [t for t in tools if t is not None]
+        elif tool_group:
+            # Get all tools in the group
+            discovery_service = request.app.state.tool_discovery_service
+            groups = discovery_service.get_tool_groups() if discovery_service else {}
+            group_tools = groups.get(tool_group, [])
+            tools = [
+                all_schemas.get(name) for name in group_tools if name in all_schemas
+            ]
+            tools = [t for t in tools if t is not None]
+
     async def event_generator():
         """Generate SSE events from Ollama streaming response."""
         content_parts = []
+        thinking_parts = []
         final_chunk = None
         message_id = uuid.uuid4().hex[:10]
+        assistant_tool_calls = None
+
+        # Track tool calls executed in this response for reporting
+        tool_calls_executed = []
 
         try:
             # Stream from Ollama
@@ -512,6 +570,7 @@ async def chat_streaming(
                 model=session.model,
                 messages=ollama_messages,
                 options=ollama_options,
+                tools=tools,
             ):
                 # Check if client disconnected
                 if await request.is_disconnected():
@@ -535,10 +594,250 @@ async def chat_streaming(
                         "data": event_data.model_dump_json(),
                     }
 
-                # Keep final chunk for metadata
+                # Keep final chunk for metadata and check for tool calls
                 if chunk.get("done"):
                     final_chunk = chunk
+                    # Check if the response has tool calls
+                    message = chunk.get("message", {})
+                    if message.get("tool_calls"):
+                        assistant_tool_calls = message["tool_calls"]
                     break
+
+                # Also check for tool calls in non-final chunks
+                message = chunk.get("message", {})
+                if message.get("tool_calls"):
+                    assistant_tool_calls = message["tool_calls"]
+
+            # Handle tool calls if present
+            if assistant_tool_calls:
+                logger.info(
+                    f"Received {len(assistant_tool_calls)} tool calls from model"
+                )
+
+                # Process each tool call
+                for tool_call in assistant_tool_calls:
+                    tool_name = tool_call.get("function", {}).get("name", "")
+                    arguments = tool_call.get("function", {}).get("arguments", {})
+
+                    # Handle case where arguments is a string (JSON)
+                    if isinstance(arguments, str):
+                        import json
+
+                        try:
+                            arguments = json.loads(arguments)
+                        except json.JSONDecodeError:
+                            arguments = {}
+
+                    tool_call_id = tool_call.get("id", f"call_{uuid.uuid4().hex[:8]}")
+
+                    # Check if confirmation is required
+                    if requires_confirmation(execution_policy):
+                        # Emit confirmation required event
+                        confirmation_id = f"conf_{uuid.uuid4().hex[:12]}"
+                        confirmation_event = ToolCallConfirmationRequiredEvent(
+                            confirmation_id=confirmation_id,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                        )
+                        yield {
+                            "event": "tool_call_confirmation_required",
+                            "data": confirmation_event.model_dump_json(),
+                        }
+
+                        # Store pending confirmation
+                        event = asyncio.Event()
+                        _pending_confirmations[confirmation_id] = {
+                            "event": event,
+                            "approved": None,
+                            "tool_call": tool_call,
+                        }
+
+                        # Wait for client confirmation (no timeout - client must respond)
+                        await event.wait()
+
+                        # Get result
+                        pending = _pending_confirmations.pop(confirmation_id, {})
+                        approved = pending.get("approved", False)
+
+                        if approved:
+                            # Execute the tool
+                            from mochi_server.dependencies import (
+                                get_tool_execution_service,
+                            )
+
+                            execution_service = get_tool_execution_service(request)
+                            result = execution_service.execute_tool(
+                                tool_name, arguments
+                            )
+
+                            # Emit tool result event
+                            result_event = ToolResultEvent(
+                                tool_name=tool_name,
+                                result=result.result,
+                                success=result.success,
+                                error=result.error,
+                            )
+                            yield {
+                                "event": "tool_result",
+                                "data": result_event.model_dump_json(),
+                            }
+
+                            # Add tool message to session
+                            tool_message = ToolMessage(
+                                tool_name=tool_name,
+                                content=result.result,
+                                message_id=uuid.uuid4().hex[:10],
+                                timestamp=datetime.now(timezone.utc)
+                                .isoformat()
+                                .replace("+00:00", "Z"),
+                            )
+                            session.add_message(tool_message)
+                            ollama_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_name": tool_name,
+                                    "content": result.result,
+                                }
+                            )
+
+                            tool_calls_executed.append(
+                                {
+                                    "name": tool_name,
+                                    "arguments": arguments,
+                                    "success": result.success,
+                                }
+                            )
+                        else:
+                            # Tool was denied - add denied message
+                            denied_message = f"Tool '{tool_name}' was denied by user"
+                            tool_message = ToolMessage(
+                                tool_name=tool_name,
+                                content=denied_message,
+                                message_id=uuid.uuid4().hex[:10],
+                                timestamp=datetime.now(timezone.utc)
+                                .isoformat()
+                                .replace("+00:00", "Z"),
+                            )
+                            session.add_message(tool_message)
+                            ollama_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_name": tool_name,
+                                    "content": denied_message,
+                                }
+                            )
+                    else:
+                        # Auto-execute (never_confirm or no policy set)
+                        # Emit tool call event
+                        tool_event = ToolCallEvent(
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            tool_call_id=tool_call_id,
+                        )
+                        yield {
+                            "event": "tool_call",
+                            "data": tool_event.model_dump_json(),
+                        }
+
+                        # Execute the tool
+                        from mochi_server.dependencies import get_tool_execution_service
+
+                        execution_service = get_tool_execution_service(request)
+                        result = execution_service.execute_tool(tool_name, arguments)
+
+                        # Emit tool result event
+                        result_event = ToolResultEvent(
+                            tool_name=tool_name,
+                            result=result.result,
+                            success=result.success,
+                            error=result.error,
+                        )
+                        yield {
+                            "event": "tool_result",
+                            "data": result_event.model_dump_json(),
+                        }
+
+                        # Add tool message to session
+                        tool_message = ToolMessage(
+                            tool_name=tool_name,
+                            content=result.result,
+                            message_id=uuid.uuid4().hex[:10],
+                            timestamp=datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        )
+                        session.add_message(tool_message)
+                        ollama_messages.append(
+                            {
+                                "role": "tool",
+                                "tool_name": tool_name,
+                                "content": result.result,
+                            }
+                        )
+
+                        tool_calls_executed.append(
+                            {
+                                "name": tool_name,
+                                "arguments": arguments,
+                                "success": result.success,
+                            }
+                        )
+
+                # Emit continuation start event
+                continuation_event = ToolContinuationStartEvent(
+                    tool_count=len(tool_calls_executed),
+                )
+                yield {
+                    "event": "tool_continuation_start",
+                    "data": continuation_event.model_dump_json(),
+                }
+
+                # Continue conversation with tool results
+                # Stream the continuation response
+                async for chunk in ollama_client.chat_stream(
+                    model=session.model,
+                    messages=ollama_messages,
+                    options=ollama_options,
+                ):
+                    # Check if client disconnected
+                    if await request.is_disconnected():
+                        logger.warning(
+                            f"Client disconnected during tool continuation for session {session_id}"
+                        )
+                        break
+
+                    message = chunk.get("message", {})
+                    content = message.get("content", "")
+                    thinking = message.get("thinking", "")
+
+                    # Emit thinking if present
+                    if thinking:
+                        thinking_parts.append(thinking)
+                        event_data = ThinkingDeltaEvent(content=thinking)
+                        yield {
+                            "event": "thinking_delta",
+                            "data": event_data.model_dump_json(),
+                        }
+
+                    # Emit content if present
+                    if content:
+                        content_parts.append(content)
+                        event_data = ContentDeltaEvent(
+                            content=content,
+                            role=message.get("role", "assistant"),
+                        )
+                        yield {
+                            "event": "content_delta",
+                            "data": event_data.model_dump_json(),
+                        }
+
+                    # Keep final chunk
+                    if chunk.get("done"):
+                        final_chunk = chunk
+                        # Check for more tool calls (multi-turn)
+                        if message.get("tool_calls"):
+                            assistant_tool_calls = message["tool_calls"]
+                        break
 
             # Assemble complete message
             complete_content = "".join(content_parts)
@@ -554,18 +853,18 @@ async def chat_streaming(
                 prompt_eval_count=final_chunk.get("prompt_eval_count")
                 if final_chunk
                 else None,
-                tool_calls=None,  # Phase 4 doesn't handle tools yet
+                tool_calls=assistant_tool_calls,
             )
 
             session.add_message(assistant_message)
 
             # Update context window config based on actual usage
             prompt_tokens = (
-                final_chunk.get('prompt_eval_count', 0) if final_chunk else 0
+                final_chunk.get("prompt_eval_count", 0) if final_chunk else 0
             )
-            eval_tokens = final_chunk.get('eval_count', 0) if final_chunk else 0
+            eval_tokens = final_chunk.get("eval_count", 0) if final_chunk else 0
             total_tokens = prompt_tokens + eval_tokens
-            
+
             # Recalculate context window based on actual token usage
             final_calculation = context_window_service.calculate_context_window(
                 model=session.model,
@@ -576,20 +875,28 @@ async def chat_streaming(
                 usage_tokens=total_tokens,
                 last_adjustment_reason=calculation.reason,
             )
-            
+
             # Update session metadata with new context window config
-            session.metadata.context_window_config.current_window = final_calculation.current_window
-            session.metadata.context_window_config.last_adjustment = final_calculation.reason
-            
+            session.metadata.context_window_config.current_window = (
+                final_calculation.current_window
+            )
+            session.metadata.context_window_config.last_adjustment = (
+                final_calculation.reason
+            )
+
             # Add to adjustment history
             adjustment_entry = {
-                'reason': final_calculation.reason,
-                'window': final_calculation.current_window,
-                'usage_tokens': total_tokens,
+                "reason": final_calculation.reason,
+                "window": final_calculation.current_window,
+                "usage_tokens": total_tokens,
             }
-            session.metadata.context_window_config.adjustment_history.append(adjustment_entry)
+            session.metadata.context_window_config.adjustment_history.append(
+                adjustment_entry
+            )
             if len(session.metadata.context_window_config.adjustment_history) > 10:
-                session.metadata.context_window_config.adjustment_history = session.metadata.context_window_config.adjustment_history[-10:]
+                session.metadata.context_window_config.adjustment_history = (
+                    session.metadata.context_window_config.adjustment_history[-10:]
+                )
 
             # Save session
             try:
@@ -648,3 +955,75 @@ async def chat_streaming(
             }
 
     return EventSourceResponse(event_generator())
+
+
+@router.post(
+    "/{session_id}/confirm-tool",
+    response_model=ToolConfirmationResponse,
+    summary="Confirm or deny a tool call",
+)
+async def confirm_tool(
+    session_id: str,
+    request_body: ToolConfirmationRequest,
+) -> ToolConfirmationResponse:
+    """Confirm or deny a pending tool call.
+
+    This endpoint is used to respond to tool_call_confirmation_required events
+    emitted during streaming when the session's execution policy is set to
+    always_confirm.
+
+    The client receives a confirmation_id in the tool_call_confirmation_required
+    event and uses it here to approve or deny the tool execution.
+
+    Args:
+        session_id: The session ID
+        request_body: Contains confirmation_id and approved flag
+
+    Returns:
+        ToolConfirmationResponse with the result
+
+    Raises:
+        HTTPException: 404 if confirmation_id not found
+    """
+    confirmation_id = request_body.confirmation_id
+    approved = request_body.approved
+
+    if confirmation_id not in _pending_confirmations:
+        logger.warning(f"Confirmation ID not found: {confirmation_id}")
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "code": "confirmation_not_found",
+                    "message": f"Confirmation ID '{confirmation_id}' not found or expired",
+                    "details": {"confirmation_id": confirmation_id},
+                }
+            },
+        )
+
+    # Get the pending confirmation
+    pending = _pending_confirmations[confirmation_id]
+    tool_call = pending["tool_call"]
+    tool_name = tool_call.get("function", {}).get("name", "unknown")
+
+    # Set the result and signal the waiting stream
+    pending["approved"] = approved
+    pending["event"].set()
+
+    # Clean up
+    del _pending_confirmations[confirmation_id]
+
+    if approved:
+        logger.info(f"Tool {tool_name} approved for session {session_id}")
+        return ToolConfirmationResponse(
+            success=True,
+            tool_name=tool_name,
+            message=f"Tool '{tool_name}' execution approved",
+        )
+    else:
+        logger.info(f"Tool {tool_name} denied for session {session_id}")
+        return ToolConfirmationResponse(
+            success=True,
+            tool_name=tool_name,
+            message=f"Tool '{tool_name}' execution denied",
+        )

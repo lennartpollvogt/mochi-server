@@ -180,6 +180,7 @@ class OllamaClient:
         model: str,
         messages: list[dict[str, Any]],
         options: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream chat responses from Ollama.
 
@@ -222,6 +223,7 @@ class OllamaClient:
                 messages=messages,
                 stream=True,
                 options=options,
+                tools=tools,
             ):
                 # Convert the chunk to a dict if it's not already
                 if hasattr(chunk, "model_dump"):
