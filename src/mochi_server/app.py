@@ -14,7 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from mochi_server.config import MochiServerSettings
 from mochi_server.ollama import OllamaClient
-from mochi_server.routers import chat, health, models, sessions, system_prompts
+from mochi_server.routers import chat, health, models, sessions, system_prompts, tools
+from mochi_server.tools import (
+    ToolDiscoveryService,
+    ToolExecutionService,
+    ToolSchemaService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Successfully connected to Ollama")
     else:
         logger.warning("Could not connect to Ollama - check if server is running")
+
+    # Initialize tool services
+    app.state.tool_discovery_service = ToolDiscoveryService(
+        tools_dir=settings.resolved_tools_dir
+    )
+    logger.info(
+        f"Initialized ToolDiscoveryService with tools_dir: {settings.resolved_tools_dir}"
+    )
+
+    app.state.tool_schema_service = ToolSchemaService()
+    app.state.tool_schema_service.set_discovery_service(
+        app.state.tool_discovery_service
+    )
+    logger.info("Initialized ToolSchemaService")
+
+    app.state.tool_execution_service = ToolExecutionService()
+    app.state.tool_execution_service.set_discovery_service(
+        app.state.tool_discovery_service
+    )
+    logger.info("Initialized ToolExecutionService")
+
+    # Initial tool discovery
+    try:
+        app.state.tool_discovery_service.discover_tools()
+        tool_count = len(app.state.tool_discovery_service.get_tools())
+        logger.info(f"Discovered {tool_count} tools at startup")
+    except Exception as e:
+        logger.warning(f"Failed to discover tools at startup: {e}")
 
     yield
 
@@ -98,5 +131,6 @@ def create_app(settings: MochiServerSettings | None = None) -> FastAPI:
     app.include_router(sessions.router)
     app.include_router(chat.router)
     app.include_router(system_prompts.router)
+    app.include_router(tools.router)
 
     return app

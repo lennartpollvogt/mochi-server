@@ -226,3 +226,97 @@ class DoneEvent(BaseModel):
             }
         }
     )
+
+
+# ============================================================================
+# SSE Event Payload Models (Phase 7: Tool System)
+# ============================================================================
+
+
+class ToolCallEvent(BaseModel):
+    """SSE event payload when LLM requests a tool execution (auto-execute policy)."""
+
+    tool_name: str = Field(description="Name of the tool to execute")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Arguments to pass to the tool",
+    )
+    tool_call_id: str = Field(
+        description="Unique identifier for this tool call",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tool_name": "add_numbers",
+                "arguments": {"a": 2, "b": 3},
+                "tool_call_id": "call_abc123",
+            }
+        }
+    )
+
+
+class ToolCallConfirmationRequiredEvent(BaseModel):
+    """SSE event payload when LLM requests a tool (always_confirm policy).
+
+    The client must respond via POST /api/v1/chat/{session_id}/confirm-tool
+    to approve or deny the tool execution.
+    """
+
+    confirmation_id: str = Field(
+        description="Unique ID to use in confirm-tool endpoint",
+    )
+    tool_name: str = Field(description="Name of the tool to execute")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Arguments to pass to the tool",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "confirmation_id": "conf_abc123",
+                "tool_name": "add_numbers",
+                "arguments": {"a": 2, "b": 3},
+            }
+        }
+    )
+
+
+class ToolResultEvent(BaseModel):
+    """SSE event payload after tool execution completes."""
+
+    tool_name: str = Field(description="Name of the tool that was executed")
+    result: str = Field(description="Result from the tool execution")
+    success: bool = Field(description="Whether the tool executed successfully")
+    error: str | None = Field(
+        default=None,
+        description="Error message if execution failed",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tool_name": "add_numbers",
+                "result": "5",
+                "success": True,
+                "error": None,
+            }
+        }
+    )
+
+
+class ToolContinuationStartEvent(BaseModel):
+    """SSE event payload before sending tool results back to LLM for continuation."""
+
+    tool_count: int = Field(
+        description="Number of tool results being sent to the LLM",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tool_count": 2,
+            }
+        }
+    )

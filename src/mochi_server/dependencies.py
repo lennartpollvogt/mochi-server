@@ -10,8 +10,13 @@ from fastapi import HTTPException, Request
 
 from mochi_server.config import MochiServerSettings
 from mochi_server.ollama import OllamaClient
-from mochi_server.services import SystemPromptService
+from mochi_server.services import DynamicContextWindowService, SystemPromptService
 from mochi_server.sessions import SessionManager
+from mochi_server.tools import (
+    ToolDiscoveryService,
+    ToolExecutionService,
+    ToolSchemaService,
+)
 
 
 @lru_cache
@@ -91,3 +96,91 @@ def get_system_prompt_service(request: Request) -> SystemPromptService:
     """
     settings = request.app.state.settings
     return SystemPromptService(prompts_dir=settings.resolved_system_prompts_dir)
+
+
+def get_context_window_service(request: Request) -> DynamicContextWindowService:
+    """Get a DynamicContextWindowService instance with app configuration.
+
+    Creates a new DynamicContextWindowService for each request, using the
+    Ollama client from app state.
+
+    Args:
+        request: The FastAPI request object.
+
+    Returns:
+        DynamicContextWindowService: A new DynamicContextWindowService instance.
+
+    Raises:
+        HTTPException: If the Ollama client is not initialized (503 Service Unavailable).
+    """
+    ollama_client = get_ollama_client(request)
+    return DynamicContextWindowService(ollama_client=ollama_client)
+
+
+def get_tool_discovery_service(request: Request) -> ToolDiscoveryService:
+    """Get a ToolDiscoveryService instance from app state.
+
+    Retrieves the ToolDiscoveryService that was created during application
+    startup and stored in app.state.
+
+    Args:
+        request: The FastAPI request object.
+
+    Returns:
+        ToolDiscoveryService: The tool discovery service instance.
+
+    Raises:
+        HTTPException: If the tool discovery service is not initialized (503 Service Unavailable).
+    """
+    if not hasattr(request.app.state, "tool_discovery_service"):
+        raise HTTPException(
+            status_code=503,
+            detail="Tool discovery service not initialized",
+        )
+    return request.app.state.tool_discovery_service
+
+
+def get_tool_schema_service(request: Request) -> ToolSchemaService:
+    """Get a ToolSchemaService instance from app state.
+
+    Retrieves the ToolSchemaService that was created during application
+    startup and stored in app.state.
+
+    Args:
+        request: The FastAPI request object.
+
+    Returns:
+        ToolSchemaService: The tool schema service instance.
+
+    Raises:
+        HTTPException: If the tool schema service is not initialized (503 Service Unavailable).
+    """
+    if not hasattr(request.app.state, "tool_schema_service"):
+        raise HTTPException(
+            status_code=503,
+            detail="Tool schema service not initialized",
+        )
+    return request.app.state.tool_schema_service
+
+
+def get_tool_execution_service(request: Request) -> ToolExecutionService:
+    """Get a ToolExecutionService instance from app state.
+
+    Retrieves the ToolExecutionService that was created during application
+    startup and stored in app.state.
+
+    Args:
+        request: The FastAPI request object.
+
+    Returns:
+        ToolExecutionService: The tool execution service instance.
+
+    Raises:
+        HTTPException: If the tool execution service is not initialized (503 Service Unavailable).
+    """
+    if not hasattr(request.app.state, "tool_execution_service"):
+        raise HTTPException(
+            status_code=503,
+            detail="Tool execution service not initialized",
+        )
+    return request.app.state.tool_execution_service

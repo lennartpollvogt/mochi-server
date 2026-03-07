@@ -3,3 +3,5 @@
   - [ ] create new cron job
   - [ ] delete cron job
   - [ ] update cron job
+- [ ] let user change ollama host
+- [ ] allow setting tool folder from API endpoint
