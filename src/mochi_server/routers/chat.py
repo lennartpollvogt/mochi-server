@@ -16,6 +16,7 @@ from mochi_server.dependencies import (
     get_context_window_service,
     get_ollama_client,
     get_tool_execution_service,
+    get_tool_schema_service,
 )
 from mochi_server.models.chat import (
     ChatRequest,
@@ -37,7 +38,7 @@ from mochi_server.ollama.client import OllamaClient
 from mochi_server.services.context_window import DynamicContextWindowService
 from mochi_server.sessions.session import ChatSession
 from mochi_server.sessions.types import AssistantMessage, ToolMessage, UserMessage
-from mochi_server.tools import ToolExecutionService
+from mochi_server.tools import ToolExecutionService, ToolSchemaService
 from mochi_server.tools.config import requires_confirmation
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ async def _collect_streaming_response(
     model: str,
     messages: list[dict],
     options: dict | None = None,
+    tools: list[dict] | None = None,
 ) -> tuple[str, dict]:
     """Collect a complete response from Ollama's streaming API.
 
@@ -89,6 +91,7 @@ async def _collect_streaming_response(
         model: Model name to use
         messages: Messages in Ollama format
         options: Optional model parameters (e.g., num_ctx for context window)
+        tools: Optional tool schemas to expose to the model
 
     Returns:
         Tuple of (complete_content, final_chunk_metadata)
@@ -104,6 +107,7 @@ async def _collect_streaming_response(
             model=model,
             messages=messages,
             options=options,
+            tools=tools,
         ):
             # Accumulate content
             message = chunk.get("message", {})
@@ -144,6 +148,147 @@ async def _collect_streaming_response(
     return complete_content, final_chunk
 
 
+def _build_active_tool_schemas(
+    request: Request,
+    active_tools: list[str],
+    tool_group: str | None,
+) -> list[dict] | None:
+    """Build the list of active tool schemas for a request."""
+    tools = None
+    if active_tools or tool_group:
+        tool_schema_service: ToolSchemaService = get_tool_schema_service(request)
+        all_schemas = tool_schema_service.get_all_tool_schemas()
+
+        if active_tools:
+            tools = [
+                all_schemas.get(name) for name in active_tools if name in all_schemas
+            ]
+            tools = [tool for tool in tools if tool is not None]
+        elif tool_group:
+            discovery_service = request.app.state.tool_discovery_service
+            groups = discovery_service.get_tool_groups() if discovery_service else {}
+            group_tools = groups.get(tool_group, [])
+            tools = [
+                all_schemas.get(name) for name in group_tools if name in all_schemas
+            ]
+            tools = [tool for tool in tools if tool is not None]
+
+    return tools
+
+
+def _create_assistant_message(
+    session: ChatSession,
+    content: str,
+    final_chunk: dict | None,
+    tool_calls: list[dict] | None,
+    message_id: str | None = None,
+) -> AssistantMessage:
+    """Create an assistant message from Ollama response data."""
+    return AssistantMessage(
+        content=content,
+        model=session.model,
+        message_id=message_id or uuid.uuid4().hex[:10],
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        eval_count=final_chunk.get("eval_count") if final_chunk else None,
+        prompt_eval_count=final_chunk.get("prompt_eval_count") if final_chunk else None,
+        tool_calls=tool_calls,
+    )
+
+
+async def _run_non_streaming_tool_flow(
+    *,
+    session: ChatSession,
+    request: Request,
+    ollama_client: OllamaClient,
+    ollama_messages: list[dict],
+    ollama_options: dict | None,
+    tools: list[dict] | None,
+    execution_policy: str,
+) -> tuple[AssistantMessage, list[dict]]:
+    """Execute the full non-streaming chat flow including tool calls."""
+    tool_calls_executed = []
+    execution_service = get_tool_execution_service(request)
+
+    while True:
+        content, final_chunk = await _collect_streaming_response(
+            ollama_client=ollama_client,
+            model=session.model,
+            messages=ollama_messages,
+            options=ollama_options,
+            tools=tools,
+        )
+
+        message = final_chunk.get("message", {}) if final_chunk else {}
+        assistant_tool_calls = message.get("tool_calls")
+
+        assistant_message = _create_assistant_message(
+            session=session,
+            content=content,
+            final_chunk=final_chunk,
+            tool_calls=assistant_tool_calls,
+        )
+        session.add_message(assistant_message)
+        ollama_messages.append(
+            {
+                "role": "assistant",
+                "content": assistant_message.content,
+                "tool_calls": assistant_message.tool_calls,
+            }
+        )
+
+        if not assistant_tool_calls:
+            return assistant_message, tool_calls_executed
+
+        if requires_confirmation(execution_policy):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "code": "tool_confirmation_requires_streaming",
+                        "message": "always_confirm tool execution is only supported via the streaming chat endpoint",
+                        "details": {},
+                    }
+                },
+            )
+
+        for tool_call in assistant_tool_calls:
+            tool_name = tool_call.get("function", {}).get("name", "")
+            arguments = tool_call.get("function", {}).get("arguments", {})
+
+            if isinstance(arguments, str):
+                import json
+
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+
+            result = execution_service.execute_tool(tool_name, arguments)
+
+            tool_message = ToolMessage(
+                tool_name=tool_name,
+                content=result.result,
+                message_id=uuid.uuid4().hex[:10],
+                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+            session.add_message(tool_message)
+            ollama_messages.append(
+                {
+                    "role": "tool",
+                    "tool_name": tool_name,
+                    "content": result.result,
+                }
+            )
+
+            tool_calls_executed.append(
+                {
+                    "name": tool_name,
+                    "arguments": arguments,
+                    "success": result.success,
+                }
+            )
+
+
 @router.post("/{session_id}", response_model=ChatResponse)
 async def chat_non_streaming(
     session_id: str,
@@ -153,6 +298,7 @@ async def chat_non_streaming(
     context_window_service: DynamicContextWindowService = Depends(
         get_context_window_service
     ),
+    tool_execution_service: ToolExecutionService = Depends(get_tool_execution_service),
 ) -> ChatResponse:
     """Send a message to a session and receive a complete response.
 
@@ -277,33 +423,36 @@ async def chat_non_streaming(
         manual_override=context_config.manual_override,
     )
 
-    # Get the streaming response and collect it
-    content, final_chunk = await _collect_streaming_response(
+    # Get tool settings and schemas
+    tool_settings = session.metadata.tool_settings
+    active_tools = tool_settings.tools or []
+    execution_policy = tool_settings.execution_policy
+    tool_group = tool_settings.tool_group
+    tools = _build_active_tool_schemas(request, active_tools, tool_group)
+
+    # Run the full non-streaming flow, including tools
+    assistant_message, tool_calls_executed = await _run_non_streaming_tool_flow(
+        session=session,
+        request=request,
         ollama_client=ollama_client,
-        model=session.model,
-        messages=ollama_messages,
-        options=ollama_options,
+        ollama_messages=ollama_messages,
+        ollama_options=ollama_options,
+        tools=tools,
+        execution_policy=execution_policy,
     )
 
-    logger.info(f"Received complete response: {len(content)} characters")
-
-    # Create assistant message
-    assistant_message = AssistantMessage(
-        content=content,
-        model=session.model,
-        message_id=uuid.uuid4().hex[:10],
-        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        eval_count=final_chunk.get("eval_count"),
-        prompt_eval_count=final_chunk.get("prompt_eval_count"),
-        tool_calls=None,  # Phase 3 doesn't handle tools yet
+    logger.info(
+        f"Received complete response: {len(assistant_message.content)} characters"
     )
 
-    # Add assistant message to session
-    session.add_message(assistant_message)
+    final_chunk = {
+        "eval_count": assistant_message.eval_count,
+        "prompt_eval_count": assistant_message.prompt_eval_count,
+    }
 
     # Update context window config based on actual usage
-    prompt_tokens = final_chunk.get("prompt_eval_count", 0)
-    eval_tokens = final_chunk.get("eval_count", 0)
+    prompt_tokens = int(final_chunk.get("prompt_eval_count") or 0)
+    eval_tokens = int(final_chunk.get("eval_count") or 0)
     total_tokens = prompt_tokens + eval_tokens
 
     # Recalculate context window based on actual token usage
@@ -366,8 +515,8 @@ async def chat_non_streaming(
 
     # Calculate context window info
     # Phase 3: Simple placeholder - full history sent
-    prompt_tokens = final_chunk.get("prompt_eval_count", 0)
-    eval_tokens = final_chunk.get("eval_count", 0)
+    prompt_tokens = int(final_chunk.get("prompt_eval_count") or 0)
+    eval_tokens = int(final_chunk.get("eval_count") or 0)
     total_tokens = prompt_tokens + eval_tokens
 
     context_window = ContextWindowInfo(
@@ -379,7 +528,7 @@ async def chat_non_streaming(
     return ChatResponse(
         session_id=session_id,
         message=message_response,
-        tool_calls_executed=[],  # Phase 3 doesn't execute tools yet
+        tool_calls_executed=tool_calls_executed,
         context_window=context_window,
     )
 
@@ -527,89 +676,93 @@ async def chat_streaming(
     active_tools = tool_settings.tools or []
     execution_policy = tool_settings.execution_policy
     tool_group = tool_settings.tool_group
-
-    # Get tool schemas if tools are enabled
-    tools = None
-    if active_tools or tool_group:
-        # Import here to avoid circular imports
-        from mochi_server.dependencies import get_tool_schema_service
-
-        tool_schema_service = get_tool_schema_service(request)
-        all_schemas = tool_schema_service.get_all_tool_schemas()
-
-        # Filter to active tools
-        if active_tools:
-            tools = [
-                all_schemas.get(name) for name in active_tools if name in all_schemas
-            ]
-            tools = [t for t in tools if t is not None]
-        elif tool_group:
-            # Get all tools in the group
-            discovery_service = request.app.state.tool_discovery_service
-            groups = discovery_service.get_tool_groups() if discovery_service else {}
-            group_tools = groups.get(tool_group, [])
-            tools = [
-                all_schemas.get(name) for name in group_tools if name in all_schemas
-            ]
-            tools = [t for t in tools if t is not None]
+    tools = _build_active_tool_schemas(request, active_tools, tool_group)
 
     async def event_generator():
         """Generate SSE events from Ollama streaming response."""
-        content_parts = []
-        thinking_parts = []
         final_chunk = None
-        message_id = uuid.uuid4().hex[:10]
-        assistant_tool_calls = None
-
-        # Track tool calls executed in this response for reporting
+        final_assistant_message = None
         tool_calls_executed = []
 
         try:
-            # Stream from Ollama
-            async for chunk in ollama_client.chat_stream(
-                model=session.model,
-                messages=ollama_messages,
-                options=ollama_options,
-                tools=tools,
-            ):
-                # Check if client disconnected
-                if await request.is_disconnected():
-                    logger.warning(
-                        f"Client disconnected during streaming for session {session_id}"
-                    )
-                    break
+            while True:
+                content_parts = []
+                thinking_parts = []
+                message_id = uuid.uuid4().hex[:10]
+                assistant_tool_calls = None
 
-                message = chunk.get("message", {})
-                content = message.get("content", "")
+                # Stream from Ollama
+                async for chunk in ollama_client.chat_stream(
+                    model=session.model,
+                    messages=ollama_messages,
+                    options=ollama_options,
+                    tools=tools,
+                ):
+                    # Check if client disconnected
+                    if await request.is_disconnected():
+                        logger.warning(
+                            f"Client disconnected during streaming for session {session_id}"
+                        )
+                        break
 
-                # Emit content delta if there's content
-                if content:
-                    content_parts.append(content)
-                    event_data = ContentDeltaEvent(
-                        content=content,
-                        role=message.get("role", "assistant"),
-                    )
-                    yield {
-                        "event": "content_delta",
-                        "data": event_data.model_dump_json(),
-                    }
-
-                # Keep final chunk for metadata and check for tool calls
-                if chunk.get("done"):
-                    final_chunk = chunk
-                    # Check if the response has tool calls
                     message = chunk.get("message", {})
+                    content = message.get("content", "")
+                    thinking = message.get("thinking", "")
+
+                    # Emit thinking delta if there's thinking
+                    if thinking:
+                        thinking_parts.append(thinking)
+                        event_data = ThinkingDeltaEvent(content=thinking)
+                        yield {
+                            "event": "thinking_delta",
+                            "data": event_data.model_dump_json(),
+                        }
+
+                    # Emit content delta if there's content
+                    if content:
+                        content_parts.append(content)
+                        event_data = ContentDeltaEvent(
+                            content=content,
+                            role=message.get("role", "assistant"),
+                        )
+                        yield {
+                            "event": "content_delta",
+                            "data": event_data.model_dump_json(),
+                        }
+
+                    # Keep final chunk for metadata and check for tool calls
+                    if chunk.get("done"):
+                        final_chunk = chunk
+                        message = chunk.get("message", {})
+                        if message.get("tool_calls"):
+                            assistant_tool_calls = message["tool_calls"]
+                        break
+
+                    # Also check for tool calls in non-final chunks
                     if message.get("tool_calls"):
                         assistant_tool_calls = message["tool_calls"]
+
+                complete_content = "".join(content_parts)
+                assistant_message = _create_assistant_message(
+                    session=session,
+                    content=complete_content,
+                    final_chunk=final_chunk,
+                    tool_calls=assistant_tool_calls,
+                    message_id=message_id,
+                )
+                session.add_message(assistant_message)
+                ollama_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant_message.content,
+                        "tool_calls": assistant_message.tool_calls,
+                    }
+                )
+
+                if not assistant_tool_calls:
+                    final_assistant_message = assistant_message
                     break
 
-                # Also check for tool calls in non-final chunks
-                message = chunk.get("message", {})
-                if message.get("tool_calls"):
-                    assistant_tool_calls = message["tool_calls"]
-
-            # Handle tool calls if present
-            if assistant_tool_calls:
                 logger.info(
                     f"Received {len(assistant_tool_calls)} tool calls from model"
                 )
@@ -630,9 +783,7 @@ async def chat_streaming(
 
                     tool_call_id = tool_call.get("id", f"call_{uuid.uuid4().hex[:8]}")
 
-                    # Check if confirmation is required
                     if requires_confirmation(execution_policy):
-                        # Emit confirmation required event
                         confirmation_id = f"conf_{uuid.uuid4().hex[:12]}"
                         confirmation_event = ToolCallConfirmationRequiredEvent(
                             confirmation_id=confirmation_id,
@@ -644,7 +795,6 @@ async def chat_streaming(
                             "data": confirmation_event.model_dump_json(),
                         }
 
-                        # Store pending confirmation
                         event = asyncio.Event()
                         _pending_confirmations[confirmation_id] = {
                             "event": event,
@@ -652,25 +802,16 @@ async def chat_streaming(
                             "tool_call": tool_call,
                         }
 
-                        # Wait for client confirmation (no timeout - client must respond)
                         await event.wait()
 
-                        # Get result
-                        pending = _pending_confirmations.pop(confirmation_id, {})
+                        pending = _pending_confirmations.get(confirmation_id, {})
                         approved = pending.get("approved", False)
 
                         if approved:
-                            # Execute the tool
-                            from mochi_server.dependencies import (
-                                get_tool_execution_service,
-                            )
-
-                            execution_service = get_tool_execution_service(request)
-                            result = execution_service.execute_tool(
+                            result = tool_execution_service.execute_tool(
                                 tool_name, arguments
                             )
 
-                            # Emit tool result event
                             result_event = ToolResultEvent(
                                 tool_name=tool_name,
                                 result=result.result,
@@ -682,7 +823,6 @@ async def chat_streaming(
                                 "data": result_event.model_dump_json(),
                             }
 
-                            # Add tool message to session
                             tool_message = ToolMessage(
                                 tool_name=tool_name,
                                 content=result.result,
@@ -708,7 +848,6 @@ async def chat_streaming(
                                 }
                             )
                         else:
-                            # Tool was denied - add denied message
                             denied_message = f"Tool '{tool_name}' was denied by user"
                             tool_message = ToolMessage(
                                 tool_name=tool_name,
@@ -727,8 +866,6 @@ async def chat_streaming(
                                 }
                             )
                     else:
-                        # Auto-execute (never_confirm or no policy set)
-                        # Emit tool call event
                         tool_event = ToolCallEvent(
                             tool_name=tool_name,
                             arguments=arguments,
@@ -739,13 +876,10 @@ async def chat_streaming(
                             "data": tool_event.model_dump_json(),
                         }
 
-                        # Execute the tool
-                        from mochi_server.dependencies import get_tool_execution_service
+                        result = tool_execution_service.execute_tool(
+                            tool_name, arguments
+                        )
 
-                        execution_service = get_tool_execution_service(request)
-                        result = execution_service.execute_tool(tool_name, arguments)
-
-                        # Emit tool result event
                         result_event = ToolResultEvent(
                             tool_name=tool_name,
                             result=result.result,
@@ -757,7 +891,6 @@ async def chat_streaming(
                             "data": result_event.model_dump_json(),
                         }
 
-                        # Add tool message to session
                         tool_message = ToolMessage(
                             tool_name=tool_name,
                             content=result.result,
@@ -783,7 +916,6 @@ async def chat_streaming(
                             }
                         )
 
-                # Emit continuation start event
                 continuation_event = ToolContinuationStartEvent(
                     tool_count=len(tool_calls_executed),
                 )
@@ -792,77 +924,15 @@ async def chat_streaming(
                     "data": continuation_event.model_dump_json(),
                 }
 
-                # Continue conversation with tool results
-                # Stream the continuation response
-                async for chunk in ollama_client.chat_stream(
-                    model=session.model,
-                    messages=ollama_messages,
-                    options=ollama_options,
-                ):
-                    # Check if client disconnected
-                    if await request.is_disconnected():
-                        logger.warning(
-                            f"Client disconnected during tool continuation for session {session_id}"
-                        )
-                        break
-
-                    message = chunk.get("message", {})
-                    content = message.get("content", "")
-                    thinking = message.get("thinking", "")
-
-                    # Emit thinking if present
-                    if thinking:
-                        thinking_parts.append(thinking)
-                        event_data = ThinkingDeltaEvent(content=thinking)
-                        yield {
-                            "event": "thinking_delta",
-                            "data": event_data.model_dump_json(),
-                        }
-
-                    # Emit content if present
-                    if content:
-                        content_parts.append(content)
-                        event_data = ContentDeltaEvent(
-                            content=content,
-                            role=message.get("role", "assistant"),
-                        )
-                        yield {
-                            "event": "content_delta",
-                            "data": event_data.model_dump_json(),
-                        }
-
-                    # Keep final chunk
-                    if chunk.get("done"):
-                        final_chunk = chunk
-                        # Check for more tool calls (multi-turn)
-                        if message.get("tool_calls"):
-                            assistant_tool_calls = message["tool_calls"]
-                        break
-
-            # Assemble complete message
-            complete_content = "".join(content_parts)
-            timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-            # Create and save assistant message
-            assistant_message = AssistantMessage(
-                content=complete_content,
-                model=session.model,
-                message_id=message_id,
-                timestamp=timestamp,
-                eval_count=final_chunk.get("eval_count") if final_chunk else None,
-                prompt_eval_count=final_chunk.get("prompt_eval_count")
-                if final_chunk
-                else None,
-                tool_calls=assistant_tool_calls,
-            )
-
-            session.add_message(assistant_message)
+            assistant_message = final_assistant_message
 
             # Update context window config based on actual usage
-            prompt_tokens = (
-                final_chunk.get("prompt_eval_count", 0) if final_chunk else 0
+            prompt_tokens = int(
+                (final_chunk.get("prompt_eval_count") if final_chunk else 0) or 0
             )
-            eval_tokens = final_chunk.get("eval_count", 0) if final_chunk else 0
+            eval_tokens = int(
+                (final_chunk.get("eval_count") if final_chunk else 0) or 0
+            )
             total_tokens = prompt_tokens + eval_tokens
 
             # Recalculate context window based on actual token usage
@@ -1009,9 +1079,6 @@ async def confirm_tool(
     # Set the result and signal the waiting stream
     pending["approved"] = approved
     pending["event"].set()
-
-    # Clean up
-    del _pending_confirmations[confirmation_id]
 
     if approved:
         logger.info(f"Tool {tool_name} approved for session {session_id}")
