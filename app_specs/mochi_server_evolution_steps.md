@@ -813,7 +813,7 @@ tests/
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/tools` | List all discovered tools and tool groups |
+| `GET` | `/api/v1/tools` | List all discovered tools |
 | `GET` | `/api/v1/tools/{tool_name}` | Get details for a specific tool |
 | `POST` | `/api/v1/tools/reload` | Force reload tools from disk |
 | `POST` | `/api/v1/chat/{session_id}/confirm-tool` | Approve or deny a pending tool call (no server-side timeout) |
@@ -830,9 +830,9 @@ tests/
 ### Key Implementation Notes
 
 - **Tool Discovery:** `ToolDiscoveryService` scans the configured `tools_dir`, loads each subdirectory's `__init__.py`, reads `__all__`, and validates each exported symbol (must be callable with a docstring).
-- **Tool Groups:** Extracted from `__dunder__` variables (e.g., `__group__ = "math"`) in each tool module's `__init__.py`.
 - **Tool Schemas:** `ToolSchemaService` uses `ollama._utils.convert_function_to_tool` to convert Python functions into Ollama-compatible tool schemas. Do not reimplement this.
 - **Tool Execution:** `ToolExecutionService` calls the tool function, catches exceptions, and returns a `ToolExecutionResult` with success/failure, result string, and error message.
+- **Execution policy resolution:** Tool confirmation uses a two-layer model: session default via `execution_policy`, plus per-tool overrides via `tool_policies`, with resolution order `tool_policies[tool_name]` → `execution_policy` → safe fallback to `always_confirm`.
 - **Chat flow with tools (auto-execute / `never_confirm`):**
   1. Ollama returns a response containing `tool_calls`.
   2. Emit `tool_call` SSE event for each call.
@@ -851,11 +851,11 @@ tests/
   5. If denied, skip the tool and inform the LLM. If the client disconnects without responding, the tool call is treated as denied and the partial response is saved.
 - **Confirmation state:** Pending confirmations are held in memory (e.g., an `asyncio.Event` + dict keyed by `confirmation_id`). There is no server-side timeout — the client is responsible for responding.
 - Tool results are always converted to strings before being sent to the LLM.
-- Session's `tool_settings` (set during creation or via `PATCH`) determines which tools are active and the execution policy.
+- Session's `tool_settings` (set during creation or via `PATCH`) determines which tools are active, the default execution policy, and any per-tool policy overrides.
 
 ### Testing
 
-- **Discovery:** Test with sample tool modules in `tests/fixtures/sample_tools/`. Verify tools are found, invalid tools are skipped, groups are extracted.
+- **Discovery:** Test with sample tool modules in `tests/fixtures/sample_tools/`. Verify tools are found and invalid tools are skipped.
 - **Schema:** Verify schema conversion produces correct Ollama tool format.
 - **Execution:** Test successful execution, exception handling, result formatting.
 - **Chat with tools (auto-execute):** Mock Ollama to return tool_calls in its response. Verify the full loop: tool_call event → execution → tool_result event → continuation → final response.
@@ -868,7 +868,7 @@ tests/
 ```bash
 # List discovered tools
 curl http://localhost:8000/api/v1/tools
-# → {"tools": {"add_numbers": {...}}, "groups": {"math": [...]}}
+# → {"tools": {"add_numbers": {...}}}
 
 # Chat with tools (auto-execute)
 curl -N -X POST "http://localhost:8000/api/v1/chat/$SESSION_ID/stream" \

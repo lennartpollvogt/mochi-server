@@ -18,13 +18,11 @@ class TestToolAPI:
         fixtures_path = tmp_path / "fixtures" / "sample_tools"
         fixtures_path.mkdir(parents=True)
 
-        # Create math_tools
         math_dir = fixtures_path / "math_tools"
         math_dir.mkdir()
         (math_dir / "__init__.py").write_text(
             '''
 __all__ = ["add_numbers", "multiply_numbers"]
-__group__ = "math"
 
 def add_numbers(a: int, b: int) -> int:
     """Add two numbers.
@@ -52,13 +50,11 @@ def multiply_numbers(a: int, b: int) -> int:
 '''
         )
 
-        # Create utilities
         util_dir = fixtures_path / "utilities"
         util_dir.mkdir()
         (util_dir / "__init__.py").write_text(
             '''
 __all__ = ["reverse_string"]
-__group__ = "utilities"
 
 def reverse_string(text: str) -> str:
     """Reverse a string.
@@ -106,20 +102,20 @@ def reverse_string(text: str) -> str:
             async with app.router.lifespan_context(app):
                 if method == "GET":
                     return await client.get(path)
-                elif method == "POST":
+                if method == "POST":
                     return await client.post(path)
-                else:
-                    raise ValueError(f"Unknown method: {method}")
+                raise ValueError(f"Unknown method: {method}")
 
     @pytest.mark.asyncio
     async def test_list_tools_with_tools(
-        self, tool_settings, discovery_service, schema_service
+        self,
+        tool_settings,
+        discovery_service,
+        schema_service,
     ):
         """GET /api/v1/tools returns all discovered tools."""
-        # Discover tools first
         discovery_service.discover_tools()
 
-        # Create app with tool services override
         app = create_app(settings=tool_settings)
         app.dependency_overrides[dependencies.get_tool_discovery_service] = lambda: (
             discovery_service
@@ -133,9 +129,7 @@ def reverse_string(text: str) -> str:
         assert response.status_code == 200
         data = response.json()
 
-        # Should have tools and groups
         assert "tools" in data
-        assert "groups" in data
         assert "add_numbers" in data["tools"]
         assert "multiply_numbers" in data["tools"]
         assert "reverse_string" in data["tools"]
@@ -143,7 +137,6 @@ def reverse_string(text: str) -> str:
     @pytest.mark.asyncio
     async def test_list_tools_empty(self, tmp_path):
         """GET /api/v1/tools with no tools returns empty dict."""
-        # Create empty tools directory
         empty_dir = tmp_path / "empty_tools"
         empty_dir.mkdir()
 
@@ -165,43 +158,16 @@ def reverse_string(text: str) -> str:
 
         response = await self.make_request(app, "GET", "/api/v1/tools")
 
-        # Should return 200 even with empty tools
         assert response.status_code == 200
         data = response.json()
         assert data["tools"] == {}
-        assert data["groups"] == {}
-
-    @pytest.mark.asyncio
-    async def test_list_tools_includes_groups(
-        self, tool_settings, discovery_service, schema_service
-    ):
-        """Verify tool groups are included in response."""
-        discovery_service.discover_tools()
-
-        app = create_app(settings=tool_settings)
-        app.dependency_overrides[dependencies.get_tool_discovery_service] = lambda: (
-            discovery_service
-        )
-        app.dependency_overrides[dependencies.get_tool_schema_service] = lambda: (
-            schema_service
-        )
-
-        response = await self.make_request(app, "GET", "/api/v1/tools")
-
-        assert response.status_code == 200
-        data = response.json()
-
-        # Check if groups are included
-        assert "groups" in data
-        assert "math" in data["groups"]
-        assert "utilities" in data["groups"]
-        assert "add_numbers" in data["groups"]["math"]
-        assert "multiply_numbers" in data["groups"]["math"]
-        assert "reverse_string" in data["groups"]["utilities"]
 
     @pytest.mark.asyncio
     async def test_list_tools_includes_parameters(
-        self, tool_settings, discovery_service, schema_service
+        self,
+        tool_settings,
+        discovery_service,
+        schema_service,
     ):
         """Verify tool parameters are included in response."""
         discovery_service.discover_tools()
@@ -219,14 +185,16 @@ def reverse_string(text: str) -> str:
         assert response.status_code == 200
         data = response.json()
 
-        # Check if parameters are included
         add_numbers_tool = data["tools"]["add_numbers"]
         assert "parameters" in add_numbers_tool
         assert "type" in add_numbers_tool["parameters"]
 
     @pytest.mark.asyncio
     async def test_get_tool_success(
-        self, tool_settings, discovery_service, schema_service
+        self,
+        tool_settings,
+        discovery_service,
+        schema_service,
     ):
         """GET /api/v1/tools/{name} returns tool details."""
         discovery_service.discover_tools()
@@ -251,7 +219,10 @@ def reverse_string(text: str) -> str:
 
     @pytest.mark.asyncio
     async def test_get_tool_not_found(
-        self, tool_settings, discovery_service, schema_service
+        self,
+        tool_settings,
+        discovery_service,
+        schema_service,
     ):
         """GET /api/v1/tools/{name} returns 404 for non-existent tool."""
         discovery_service.discover_tools()
@@ -264,7 +235,11 @@ def reverse_string(text: str) -> str:
             schema_service
         )
 
-        response = await self.make_request(app, "GET", "/api/v1/tools/nonexistent_tool")
+        response = await self.make_request(
+            app,
+            "GET",
+            "/api/v1/tools/nonexistent_tool",
+        )
 
         assert response.status_code == 404
         data = response.json()
@@ -272,7 +247,10 @@ def reverse_string(text: str) -> str:
 
     @pytest.mark.asyncio
     async def test_reload_tools_success(
-        self, tool_settings, discovery_service, schema_service
+        self,
+        tool_settings,
+        discovery_service,
+        schema_service,
     ):
         """POST /api/v1/tools/reload returns success."""
         discovery_service.discover_tools()
@@ -295,7 +273,10 @@ def reverse_string(text: str) -> str:
 
     @pytest.mark.asyncio
     async def test_reload_tools_returns_count(
-        self, tool_settings, discovery_service, schema_service
+        self,
+        tool_settings,
+        discovery_service,
+        schema_service,
     ):
         """Verify tools_count in response after reload."""
         discovery_service.discover_tools()
@@ -313,30 +294,6 @@ def reverse_string(text: str) -> str:
         assert response.status_code == 200
         data = response.json()
 
-        # Should have tools_count
         assert "tools_count" in data
         assert data["tools_count"] == 3
         assert "message" in data
-
-    @pytest.mark.asyncio
-    async def test_reload_tools_message(
-        self, tool_settings, discovery_service, schema_service
-    ):
-        """Verify success message in reload response."""
-        discovery_service.discover_tools()
-
-        app = create_app(settings=tool_settings)
-        app.dependency_overrides[dependencies.get_tool_discovery_service] = lambda: (
-            discovery_service
-        )
-        app.dependency_overrides[dependencies.get_tool_schema_service] = lambda: (
-            schema_service
-        )
-
-        response = await self.make_request(app, "POST", "/api/v1/tools/reload")
-
-        assert response.status_code == 200
-        data = response.json()
-
-        assert "message" in data
-        assert "Successfully reloaded" in data["message"]

@@ -71,11 +71,11 @@ Phase 7 implements the Tool System for mochi-server, enabling:
 ## Key Implementation Details
 
 ### Tool Discovery
-- Scans configured tools_dir for subdirectories
-- Each subdirectory must contain __init__.py
-- Reads __all__ list to find exported functions
-- Validates: callable + has docstring
-- Extracts __group__ for tool grouping
+- Scans configured `tools_dir` for subdirectories
+- Each subdirectory must contain `__init__.py`
+- Reads `__all__` to find exported functions
+- Falls back to public callables if `__all__` is absent
+- Validates each exported symbol: callable + has docstring
 
 ### Tool Schema Conversion
 - Uses ollama._utils.convert_function_to_tool() for Ollama-compatible schemas
@@ -84,21 +84,21 @@ Phase 7 implements the Tool System for mochi-server, enabling:
 
 ### Tool Execution Flow
 
-**Auto-execute (never_confirm policy):**
-1. Ollama returns response with tool_calls
-2. Emit tool_call SSE event
+**Auto-execute (effective policy resolves to `never_confirm`):**
+1. Ollama returns response with `tool_calls`
+2. Emit `tool_call` SSE event
 3. Execute tool immediately
-4. Emit tool_result SSE event
+4. Emit `tool_result` SSE event
 5. Add tool message to session
-6. Emit tool_continuation_start event
+6. Emit `tool_continuation_start` event
 7. Send updated history (with tool results) to Ollama
 8. Stream continuation response
 
-**Confirmation (always_confirm policy):**
-1. Ollama returns response with tool_calls
-2. Emit tool_call_confirmation_required with confirmation_id
+**Confirmation (effective policy resolves to `always_confirm`):**
+1. Ollama returns response with `tool_calls`
+2. Emit `tool_call_confirmation_required` with `confirmation_id`
 3. Stream pauses, waiting for client callback
-4. Client calls POST /chat/{id}/confirm-tool
+4. Client calls `POST /chat/{id}/confirm-tool`
 5. If approved: execute tool and continue as above
 6. If denied: add denial message and continue
 
@@ -122,10 +122,15 @@ Test specification available at: tests/PHASE7_TESTS_SPEC.md
 
 ## Configuration
 
-Tools are configured via session's tool_settings:
-- tools: list of tool names to enable
-- tool_group: enable all tools in a group
-- execution_policy: "always_confirm" | "never_confirm" | "auto"
+Tools are configured via the session's `tool_settings`:
+- `tools`: explicit list of tool names to enable
+- `execution_policy`: session-wide default policy (`always_confirm` or `never_confirm`)
+- `tool_policies`: per-tool overrides keyed by tool name
+
+Effective policy resolution order:
+1. `tool_policies[tool_name]`
+2. `execution_policy`
+3. safe fallback to `always_confirm`
 
 ## Usage Example
 

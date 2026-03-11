@@ -14,7 +14,7 @@ A FastAPI-based server application that integrates with [Ollama](https://github.
 - [Tools Feature](#tools-feature)
   - [How Tools Work](#how-tools-work)
   - [Writing Your Own Tools](#writing-your-own-tools)
-  - [Tool Groups](#tool-groups)
+  - [Enabling Tools in a Session](#enabling-tools-in-a-session)
   - [Execution Policies](#execution-policies)
   - [Best Practices](#best-practices)
 - [Context Window Management](#context-window-management)
@@ -174,8 +174,10 @@ The server uses the following directory structure (relative to `MOCHI_DATA_DIR`)
 {data_dir}/
 ├── chat_sessions/           # User chat session files
 ├── tools/                   # Tool definitions
-│   ├── __init__.py          # Tool exports and groups
-│   ├── math_tools.py       # Tool implementations
+│   ├── math_tools/          # Tool module directory
+│   │   └── __init__.py      # Exported tool functions
+│   ├── utility_tools/       # Another tool module directory
+│   │   └── __init__.py
 │   └── ...
 └── system_prompts/          # System prompt files
 ```
@@ -285,26 +287,9 @@ Every tool function **must** meet these requirements:
 2. **Docstring** describing the function (used for schema generation)
 3. **Return a string** (the result converted to string for LLM consumption)
 
-### Tool Groups
-
-Define tool groups in `tools/__init__.py` using double-underscore variables:
-
-```python
-# tools/__init__.py
-from .math_tools import add_numbers, multiply_numbers
-from .utility_tools import get_current_time, flip_coin
-
-# Export all tools
-__all__ = ["add_numbers", "multiply_numbers", "get_current_time", "flip_coin"]
-
-# Define tool groups
-__math__ = ["add_numbers", "multiply_numbers"]
-__utilities__ = ["get_current_time", "flip_coin"]
-```
-
 ### Enabling Tools in a Session
 
-When creating a session, specify tool settings:
+Tools are enabled explicitly by name in `tool_settings.tools`.
 
 ```json
 {
@@ -316,24 +301,40 @@ When creating a session, specify tool settings:
 }
 ```
 
-Or use tool groups:
+### Execution Policies
+
+Mochi Server uses a two-layer confirmation policy model:
+
+1. **Session default** via `tool_settings.execution_policy`
+2. **Per-tool overrides** via `tool_settings.tool_policies`
+
+Policy resolution order is:
+
+1. If `tool_policies[tool_name]` exists and is valid, use it
+2. Otherwise, use `execution_policy`
+3. If neither value is valid, fall back safely to `always_confirm`
+
+Example with a default confirmation requirement and a per-tool override:
 
 ```json
 {
   "model": "llama3.2",
   "tool_settings": {
-    "tool_group": "math",
-    "execution_policy": "always_confirm"
+    "tools": ["add_numbers", "multiply_numbers"],
+    "execution_policy": "always_confirm",
+    "tool_policies": {
+      "multiply_numbers": "never_confirm"
+    }
   }
 }
 ```
 
-### Execution Policies
+Supported policy values:
 
 | Policy | Description |
 |--------|-------------|
-| `never_confirm` | Execute tools automatically without user confirmation |
-| `always_confirm` | Require user confirmation before executing each tool |
+| `never_confirm` | Execute the tool automatically without user confirmation |
+| `always_confirm` | Require user confirmation before executing the tool |
 
 When confirmation is required, the server emits a `tool_call_confirmation_required` event with a `confirmation_id`. The client must then call:
 
@@ -548,8 +549,8 @@ Response:
 
 ```json
 {
-  "tools": [
-    {
+  "tools": {
+    "add_numbers": {
       "name": "add_numbers",
       "description": "Add two numbers together.",
       "parameters": {
@@ -561,10 +562,6 @@ Response:
         "required": ["a", "b"]
       }
     }
-  ],
-  "groups": {
-    "math": ["add_numbers", "multiply_numbers"],
-    "utilities": ["get_current_time", "flip_coin"]
   }
 }
 ```

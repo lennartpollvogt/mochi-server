@@ -170,11 +170,17 @@ If you change the session format, you **must** increment the format version and 
 ## 8. Tool System Rules
 
 - Tools are discovered from a user-provided directory at runtime. The server does not bundle any tools.
-- Tool discovery loads `__init__.py`, reads `__all__`, validates functions (callable + has docstring).
-- Tool groups are extracted from `__dunder__` variables in `__init__.py`.
+- Tool discovery scans tool subdirectories, loads each `__init__.py`, reads `__all__`, and validates exported functions (callable + has docstring).
+- Tool groups are no longer part of the runtime model. Tools are enabled explicitly by name.
 - Schema conversion uses `ollama._utils.convert_function_to_tool`. Do not reimplement this.
-- Tool execution must respect the configured `ToolExecutionPolicy`.
-- For `always_confirm` policy: the server emits a `tool_call_confirmation_required` SSE event and waits for a client HTTP callback (`POST /api/v1/chat/{session_id}/confirm-tool`).
+- Tool execution must respect the configured two-layer policy model:
+  - Session default via `execution_policy`
+  - Per-tool overrides via `tool_policies`
+- Effective policy resolution order is:
+  1. `tool_policies[tool_name]` when present and valid
+  2. `execution_policy`
+  3. Safe fallback to `always_confirm`
+- For tools whose effective policy is `always_confirm`: the server emits a `tool_call_confirmation_required` SSE event and waits for a client HTTP callback (`POST /api/v1/chat/{session_id}/confirm-tool`).
 - Tool results are always strings (for LLM consumption).
 
 ---

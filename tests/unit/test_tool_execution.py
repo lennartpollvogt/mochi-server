@@ -22,7 +22,6 @@ class TestToolExecutionService:
         math_init.write_text(
             '''
 __all__ = ["add_numbers", "multiply_numbers", "error_tool", "return_none_tool"]
-__group__ = "math"
 
 def add_numbers(a: int, b: int) -> int:
     """Add two numbers together.
@@ -216,7 +215,6 @@ class TestToolExecutionResultFormatting:
             name: {
                 "name": name,
                 "module": "test",
-                "group": None,
                 "docstring": f"Test tool {name}",
             }
             for name in discovery_service._tools

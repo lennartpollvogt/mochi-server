@@ -31,10 +31,10 @@ async def list_tools(
     ],
     schema_service: Annotated[ToolSchemaService, Depends(get_tool_schema_service)],
 ) -> ToolListResponse:
-    """List all discovered tools and their groups.
+    """List all discovered tools.
 
     Returns:
-        ToolListResponse with all tools and groups
+        ToolListResponse with all discovered tools
 
     Example:
         GET /api/v1/tools
@@ -45,25 +45,18 @@ async def list_tools(
                     "description": "Add two numbers together.",
                     "parameters": {...}
                 }
-            },
-            "groups": {
-                "math": ["add_numbers"]
             }
         }
     """
-    # Discover tools if not already done
     discovery_service.discover_tools()
 
-    # Get all tool schemas
     schemas = schema_service.get_all_tool_schemas()
 
-    # Build tool details
     tools = {}
     for tool_name, schema in schemas.items():
         metadata = discovery_service.get_tool_metadata(tool_name)
         description = metadata.get("docstring", "") if metadata else ""
 
-        # Extract parameters from schema
         parameters = {}
         if "function" in schema:
             parameters = schema["function"].get("parameters", {})
@@ -74,13 +67,7 @@ async def list_tools(
             parameters=parameters,
         )
 
-    # Get groups
-    groups = discovery_service.get_tool_groups()
-
-    return ToolListResponse(
-        tools=tools,
-        groups=groups,
-    )
+    return ToolListResponse(tools=tools)
 
 
 @router.get(
@@ -106,10 +93,8 @@ async def get_tool(
     Raises:
         HTTPException: 404 if tool not found
     """
-    # Discover tools if not already done
     discovery_service.discover_tools()
 
-    # Get the tool
     tool_func = discovery_service.get_tool(tool_name)
     if tool_func is None:
         raise HTTPException(
@@ -123,11 +108,9 @@ async def get_tool(
             },
         )
 
-    # Get metadata
     metadata = discovery_service.get_tool_metadata(tool_name)
     description = metadata.get("docstring", "") if metadata else ""
 
-    # Get schema
     schema = schema_service.get_tool_schema(tool_name)
     parameters = {}
     if schema and "function" in schema:
@@ -169,17 +152,13 @@ async def reload_tools(
     """
     logger.info("Reloading tools from disk")
 
-    # Clear schema cache
     schema_service.invalidate_cache()
-
-    # Reload discovery service
     discovery_service.reload()
 
-    # Get updated tool count
     tools = discovery_service.get_tools()
     tools_count = len(tools)
 
-    logger.info(f"Reloaded {tools_count} tools")
+    logger.info("Reloaded %s tools", tools_count)
 
     return ToolReloadResponse(
         success=True,

@@ -184,13 +184,17 @@ def test_update_tool_settings():
     session = ChatSession(session_id="test123", model="llama3:8b")
 
     new_settings = ToolSettings(
-        tools=["tool1", "tool2"], tool_group="math", execution_policy="never_confirm"
+        tools=["tool1", "tool2"],
+        execution_policy="never_confirm",
+        tool_policies={"tool1": "always_confirm"},
     )
     session.update_tool_settings(new_settings)
 
     assert session.metadata.tool_settings.tools == ["tool1", "tool2"]
-    assert session.metadata.tool_settings.tool_group == "math"
     assert session.metadata.tool_settings.execution_policy == "never_confirm"
+    assert session.metadata.tool_settings.tool_policies == {
+        "tool1": "always_confirm",
+    }
 
 
 def test_update_agent_settings():
@@ -215,7 +219,7 @@ def test_to_dict():
     assert "messages" in data
     assert data["metadata"]["session_id"] == "test123"
     assert data["metadata"]["model"] == "llama3:8b"
-    assert data["metadata"]["format_version"] == "1.3"
+    assert data["metadata"]["format_version"] == "1.4"
     assert len(data["messages"]) == 1
     assert data["messages"][0]["content"] == "Hello"
 
@@ -423,7 +427,7 @@ def test_session_json_format(tmp_path: Path):
     assert "metadata" in data
     assert data["metadata"]["session_id"] == "test123"
     assert data["metadata"]["model"] == "llama3:8b"
-    assert data["metadata"]["format_version"] == "1.3"
+    assert data["metadata"]["format_version"] == "1.4"
     assert data["metadata"]["message_count"] == 1
     assert "tool_settings" in data["metadata"]
     assert "agent_settings" in data["metadata"]
