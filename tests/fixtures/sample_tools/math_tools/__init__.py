@@ -5,8 +5,6 @@ This module contains math tool functions for testing.
 
 __all__ = ["add_numbers", "multiply_numbers"]
 
-__group__ = "math"
-
 
 def add_numbers(a: int, b: int) -> int:
     """Add two numbers together.

@@ -21,8 +21,6 @@ from mochi_server.dependencies import (
     get_session_manager,
     get_system_prompt_service,
 )
-from mochi_server.models.status import ContextWindowStatus, SessionStatusResponse
-from mochi_server.services.context_window import DynamicContextWindowService
 from mochi_server.models.sessions import (
     AgentSettingsResponse,
     CreateSessionRequest,
@@ -37,8 +35,10 @@ from mochi_server.models.sessions import (
     ToolSettingsResponse,
     UpdateSessionRequest,
 )
+from mochi_server.models.status import ContextWindowStatus, SessionStatusResponse
 from mochi_server.models.system_prompts import SetSessionSystemPromptRequest
 from mochi_server.services import SystemPromptService
+from mochi_server.services.context_window import DynamicContextWindowService
 from mochi_server.sessions import (
     AgentSettings,
     SessionCreationOptions,
@@ -85,8 +85,8 @@ async def create_session(
         if request.tool_settings:
             tool_settings = ToolSettings(
                 tools=request.tool_settings.tools,
-                tool_group=request.tool_settings.tool_group,
                 execution_policy=request.tool_settings.execution_policy,
+                tool_policies=request.tool_settings.tool_policies,
             )
 
         agent_settings = None
@@ -139,8 +139,8 @@ async def create_session(
             message_count=session.metadata.message_count,
             tool_settings=ToolSettingsResponse(
                 tools=session.metadata.tool_settings.tools,
-                tool_group=session.metadata.tool_settings.tool_group,
                 execution_policy=session.metadata.tool_settings.execution_policy,
+                tool_policies=session.metadata.tool_settings.tool_policies,
             ),
             agent_settings=AgentSettingsResponse(
                 enabled_agents=session.metadata.agent_settings.enabled_agents
@@ -254,8 +254,8 @@ async def get_session(
             message_count=session.metadata.message_count,
             tool_settings=ToolSettingsResponse(
                 tools=session.metadata.tool_settings.tools,
-                tool_group=session.metadata.tool_settings.tool_group,
                 execution_policy=session.metadata.tool_settings.execution_policy,
+                tool_policies=session.metadata.tool_settings.tool_policies,
             ),
             agent_settings=AgentSettingsResponse(
                 enabled_agents=session.metadata.agent_settings.enabled_agents
@@ -343,8 +343,8 @@ async def update_session(
         if request.tool_settings:
             tool_settings = ToolSettings(
                 tools=request.tool_settings.tools,
-                tool_group=request.tool_settings.tool_group,
                 execution_policy=request.tool_settings.execution_policy,
+                tool_policies=request.tool_settings.tool_policies,
             )
 
         agent_settings = None
@@ -370,8 +370,8 @@ async def update_session(
             message_count=session.metadata.message_count,
             tool_settings=ToolSettingsResponse(
                 tools=session.metadata.tool_settings.tools,
-                tool_group=session.metadata.tool_settings.tool_group,
                 execution_policy=session.metadata.tool_settings.execution_policy,
+                tool_policies=session.metadata.tool_settings.tool_policies,
             ),
             agent_settings=AgentSettingsResponse(
                 enabled_agents=session.metadata.agent_settings.enabled_agents
@@ -671,9 +671,9 @@ async def get_session_status(
     system_prompt_file: str | None = None
     if session.messages:
         first_msg = session.messages[0]
-        if hasattr(first_msg, 'role') and first_msg.role == 'system':
+        if hasattr(first_msg, "role") and first_msg.role == "system":
             # Access source_file with type cast since we know it's a SystemMessage
-            source_file = getattr(first_msg, 'source_file', None)
+            source_file = getattr(first_msg, "source_file", None)
             if source_file is not None:
                 system_prompt_file = str(source_file)
 
@@ -689,19 +689,21 @@ async def get_session_status(
 
     # Build the status response
     from mochi_server.models.status import ConversationSummaryStatus
-    
+
     response = SessionStatusResponse(
         session_id=session.session_id,
         model=session.model,
         message_count=session.metadata.message_count,
         context_window=context_window_status,
-        tools_enabled=bool(session.metadata.tool_settings.tools or session.metadata.tool_settings.tool_group),
-        active_tools=session.metadata.tool_settings.tools or [],
+        tools_enabled=bool(session.metadata.tool_settings.tools),
+        active_tools=session.metadata.tool_settings.tools,
         execution_policy=session.metadata.tool_settings.execution_policy,
         agents_enabled=bool(session.metadata.agent_settings.enabled_agents),
         enabled_agents=session.metadata.agent_settings.enabled_agents,
         system_prompt_file=system_prompt_file,
-        summary=ConversationSummaryStatus(**session.metadata.summary.__dict__) if session.metadata.summary else None,
+        summary=ConversationSummaryStatus(**session.metadata.summary.__dict__)
+        if session.metadata.summary
+        else None,
         summary_model=session.metadata.summary_model,
     )
 

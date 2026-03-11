@@ -126,15 +126,17 @@ async def test_create_session_with_tool_settings(
 
     tool_settings = ToolSettings(
         tools=["tool1", "tool2"],
-        tool_group="math",
         execution_policy="never_confirm",
+        tool_policies={"tool1": "always_confirm"},
     )
     options = SessionCreationOptions(model="llama3:8b", tool_settings=tool_settings)
     session = await manager.create_session(options)
 
     assert session.metadata.tool_settings.tools == ["tool1", "tool2"]
-    assert session.metadata.tool_settings.tool_group == "math"
     assert session.metadata.tool_settings.execution_policy == "never_confirm"
+    assert session.metadata.tool_settings.tool_policies == {
+        "tool1": "always_confirm",
+    }
 
 
 @pytest.mark.asyncio
@@ -314,15 +316,17 @@ async def test_update_session_tool_settings(sessions_dir: Path):
     manager = SessionManager(sessions_dir, ollama_client=None)
     new_settings = ToolSettings(
         tools=["new_tool"],
-        tool_group="utilities",
-        execution_policy="auto",
+        execution_policy="never_confirm",
+        tool_policies={"new_tool": "always_confirm"},
     )
 
     updated = await manager.update_session("test123", tool_settings=new_settings)
 
     assert updated.metadata.tool_settings.tools == ["new_tool"]
-    assert updated.metadata.tool_settings.tool_group == "utilities"
-    assert updated.metadata.tool_settings.execution_policy == "auto"
+    assert updated.metadata.tool_settings.execution_policy == "never_confirm"
+    assert updated.metadata.tool_settings.tool_policies == {
+        "new_tool": "always_confirm",
+    }
 
 
 @pytest.mark.asyncio

@@ -39,7 +39,7 @@ from mochi_server.services.context_window import DynamicContextWindowService
 from mochi_server.sessions.session import ChatSession
 from mochi_server.sessions.types import AssistantMessage, ToolMessage, UserMessage
 from mochi_server.tools import ToolExecutionService, ToolSchemaService
-from mochi_server.tools.config import requires_confirmation
+from mochi_server.tools.config import tool_requires_confirmation
 
 logger = logging.getLogger(__name__)
 
@@ -151,27 +151,14 @@ async def _collect_streaming_response(
 def _build_active_tool_schemas(
     request: Request,
     active_tools: list[str],
-    tool_group: str | None,
 ) -> list[dict] | None:
     """Build the list of active tool schemas for a request."""
     tools = None
-    if active_tools or tool_group:
+    if active_tools:
         tool_schema_service: ToolSchemaService = get_tool_schema_service(request)
         all_schemas = tool_schema_service.get_all_tool_schemas()
-
-        if active_tools:
-            tools = [
-                all_schemas.get(name) for name in active_tools if name in all_schemas
-            ]
-            tools = [tool for tool in tools if tool is not None]
-        elif tool_group:
-            discovery_service = request.app.state.tool_discovery_service
-            groups = discovery_service.get_tool_groups() if discovery_service else {}
-            group_tools = groups.get(tool_group, [])
-            tools = [
-                all_schemas.get(name) for name in group_tools if name in all_schemas
-            ]
-            tools = [tool for tool in tools if tool is not None]
+        tools = [all_schemas.get(name) for name in active_tools if name in all_schemas]
+        tools = [tool for tool in tools if tool is not None]
 
     return tools
 
@@ -203,7 +190,6 @@ async def _run_non_streaming_tool_flow(
     ollama_messages: list[dict],
     ollama_options: dict | None,
     tools: list[dict] | None,
-    execution_policy: str,
 ) -> tuple[AssistantMessage, list[dict]]:
     """Execute the full non-streaming chat flow including tool calls."""
     tool_calls_executed = []
@@ -239,18 +225,6 @@ async def _run_non_streaming_tool_flow(
         if not assistant_tool_calls:
             return assistant_message, tool_calls_executed
 
-        if requires_confirmation(execution_policy):
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": {
-                        "code": "tool_confirmation_requires_streaming",
-                        "message": "always_confirm tool execution is only supported via the streaming chat endpoint",
-                        "details": {},
-                    }
-                },
-            )
-
         for tool_call in assistant_tool_calls:
             tool_name = tool_call.get("function", {}).get("name", "")
             arguments = tool_call.get("function", {}).get("arguments", {})
@@ -262,6 +236,18 @@ async def _run_non_streaming_tool_flow(
                     arguments = json.loads(arguments)
                 except json.JSONDecodeError:
                     arguments = {}
+
+            if tool_requires_confirmation(tool_name, session.metadata.tool_settings):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "code": "tool_confirmation_requires_streaming",
+                            "message": f"Tool '{tool_name}' requires confirmation and is only supported via the streaming chat endpoint",
+                            "details": {"tool_name": tool_name},
+                        }
+                    },
+                )
 
             result = execution_service.execute_tool(tool_name, arguments)
 
@@ -426,9 +412,7 @@ async def chat_non_streaming(
     # Get tool settings and schemas
     tool_settings = session.metadata.tool_settings
     active_tools = tool_settings.tools or []
-    execution_policy = tool_settings.execution_policy
-    tool_group = tool_settings.tool_group
-    tools = _build_active_tool_schemas(request, active_tools, tool_group)
+    tools = _build_active_tool_schemas(request, active_tools)
 
     # Run the full non-streaming flow, including tools
     assistant_message, tool_calls_executed = await _run_non_streaming_tool_flow(
@@ -438,7 +422,6 @@ async def chat_non_streaming(
         ollama_messages=ollama_messages,
         ollama_options=ollama_options,
         tools=tools,
-        execution_policy=execution_policy,
     )
 
     logger.info(
@@ -674,9 +657,7 @@ async def chat_streaming(
     # Get tool settings and schemas
     tool_settings = session.metadata.tool_settings
     active_tools = tool_settings.tools or []
-    execution_policy = tool_settings.execution_policy
-    tool_group = tool_settings.tool_group
-    tools = _build_active_tool_schemas(request, active_tools, tool_group)
+    tools = _build_active_tool_schemas(request, active_tools)
 
     async def event_generator():
         """Generate SSE events from Ollama streaming response."""
@@ -783,7 +764,9 @@ async def chat_streaming(
 
                     tool_call_id = tool_call.get("id", f"call_{uuid.uuid4().hex[:8]}")
 
-                    if requires_confirmation(execution_policy):
+                    if tool_requires_confirmation(
+                        tool_name, session.metadata.tool_settings
+                    ):
                         confirmation_id = f"conf_{uuid.uuid4().hex[:12]}"
                         confirmation_event = ToolCallConfirmationRequiredEvent(
                             confirmation_id=confirmation_id,

@@ -28,7 +28,6 @@ def sample_tools(test_settings):
     (math_dir / "__init__.py").write_text(
         '''
 __all__ = ["multiply_numbers"]
-__group__ = "math"
 
 def multiply_numbers(a: int, b: int) -> str:
     """Multiply two numbers together.
@@ -49,7 +48,6 @@ def multiply_numbers(a: int, b: int) -> str:
     (utilities_dir / "__init__.py").write_text(
         '''
 __all__ = ["flip_coin"]
-__group__ = "utilities"
 
 def flip_coin() -> str:
     """Flip a coin.
@@ -383,8 +381,3 @@ class TestChatWithTools:
         """Verify never_confirm policy value."""
         policy = ToolExecutionPolicy.NEVER_CONFIRM
         assert policy.value == "never_confirm"
-
-    def test_policy_auto(self):
-        """Verify auto policy value."""
-        policy = ToolExecutionPolicy.AUTO
-        assert policy.value == "auto"

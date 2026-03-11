@@ -110,8 +110,8 @@ async def test_create_session_with_tool_settings(async_client):
             "model": "llama3:8b",
             "tool_settings": {
                 "tools": ["tool1", "tool2"],
-                "tool_group": "math",
                 "execution_policy": "never_confirm",
+                "tool_policies": {"tool1": "always_confirm"},
             },
         },
     )
@@ -120,8 +120,8 @@ async def test_create_session_with_tool_settings(async_client):
     data = response.json()
 
     assert data["tool_settings"]["tools"] == ["tool1", "tool2"]
-    assert data["tool_settings"]["tool_group"] == "math"
     assert data["tool_settings"]["execution_policy"] == "never_confirm"
+    assert data["tool_settings"]["tool_policies"] == {"tool1": "always_confirm"}
 
 
 @pytest.mark.asyncio
@@ -371,8 +371,8 @@ async def test_update_session_tool_settings(async_client):
         json={
             "tool_settings": {
                 "tools": ["new_tool"],
-                "tool_group": "utilities",
-                "execution_policy": "auto",
+                "execution_policy": "never_confirm",
+                "tool_policies": {"new_tool": "always_confirm"},
             }
         },
     )
@@ -381,8 +381,8 @@ async def test_update_session_tool_settings(async_client):
     data = response.json()
 
     assert data["tool_settings"]["tools"] == ["new_tool"]
-    assert data["tool_settings"]["tool_group"] == "utilities"
-    assert data["tool_settings"]["execution_policy"] == "auto"
+    assert data["tool_settings"]["execution_policy"] == "never_confirm"
+    assert data["tool_settings"]["tool_policies"] == {"new_tool": "always_confirm"}
 
 
 @pytest.mark.asyncio
@@ -549,8 +549,8 @@ async def test_update_multiple_fields(async_client, test_app):
             "model": "qwen3:14b",
             "tool_settings": {
                 "tools": ["tool1"],
-                "tool_group": None,
                 "execution_policy": "always_confirm",
+                "tool_policies": {"tool1": "never_confirm"},
             },
             "agent_settings": {"enabled_agents": ["agent1"]},
         },
@@ -561,6 +561,8 @@ async def test_update_multiple_fields(async_client, test_app):
 
     assert data["model"] == "qwen3:14b"
     assert data["tool_settings"]["tools"] == ["tool1"]
+    assert data["tool_settings"]["execution_policy"] == "always_confirm"
+    assert data["tool_settings"]["tool_policies"] == {"tool1": "never_confirm"}
     assert data["agent_settings"]["enabled_agents"] == ["agent1"]
 
 
@@ -828,7 +830,10 @@ async def test_create_session_with_system_prompt_from_file(async_client, test_ap
     session_data = session_response.json()
     assert len(session_data["messages"]) == 1
     assert session_data["messages"][0]["role"] == "system"
-    assert session_data["messages"][0]["content"] == "You are a helpful assistant from file."
+    assert (
+        session_data["messages"][0]["content"]
+        == "You are a helpful assistant from file."
+    )
     assert session_data["messages"][0]["source_file"] == "helpful.md"
 
 

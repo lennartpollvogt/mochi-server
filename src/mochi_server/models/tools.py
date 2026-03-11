@@ -1,7 +1,7 @@
 """Pydantic models for tool API requests and responses.
 
 This module defines the request and response schemas for the tools endpoints,
-including tool listing, details, and confirmation.
+including tool listing, details, reload, and confirmation.
 """
 
 from typing import Any
@@ -50,10 +50,6 @@ class ToolListResponse(BaseModel):
         default_factory=dict,
         description="Dictionary of tool names to tool details",
     )
-    groups: dict[str, list[str]] = Field(
-        default_factory=dict,
-        description="Tool groups and their member tools",
-    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -83,10 +79,7 @@ class ToolListResponse(BaseModel):
                             "required": ["a", "b"],
                         },
                     },
-                },
-                "groups": {
-                    "math": ["add_numbers", "multiply_numbers"],
-                },
+                }
             }
         }
     )

@@ -7,12 +7,16 @@ class ToolSettingsRequest(BaseModel):
     """Tool settings for a session."""
 
     tools: list[str] = Field(
-        default_factory=list, description="List of enabled tool names"
+        default_factory=list,
+        description="List of enabled tool names",
     )
-    tool_group: str | None = Field(None, description="Tool group name to enable")
     execution_policy: str = Field(
         "always_confirm",
-        description="Tool execution policy: always_confirm, never_confirm, or auto",
+        description="Default tool execution policy: always_confirm or never_confirm",
+    )
+    tool_policies: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-tool execution policy overrides keyed by tool name",
     )
 
 
@@ -30,7 +34,8 @@ class CreateSessionRequest(BaseModel):
 
     model: str = Field(..., description="The LLM model to use for this session")
     system_prompt: str | None = Field(
-        None, description="Optional system prompt content"
+        None,
+        description="Optional system prompt content",
     )
     system_prompt_source_file: str | None = Field(
         None,
@@ -71,7 +76,8 @@ class SummaryResponse(BaseModel):
 
     summary: str = Field("", description="Summary text")
     topics: list[str] = Field(
-        default_factory=list, description="List of topics discussed"
+        default_factory=list,
+        description="List of topics discussed",
     )
 
 
@@ -79,8 +85,8 @@ class ToolSettingsResponse(BaseModel):
     """Tool settings in a response."""
 
     tools: list[str]
-    tool_group: str | None
     execution_policy: str
+    tool_policies: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentSettingsResponse(BaseModel):

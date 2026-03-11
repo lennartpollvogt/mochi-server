@@ -19,7 +19,7 @@ class ToolDiscoveryService:
 
     This service scans a tools directory for Python modules, loads them,
     validates that exported symbols are callable with docstrings, and
-    extracts tool groups from __dunder__ variables.
+    stores basic metadata for discovered tools.
     """
 
     def __init__(self, tools_dir: Path | None = None):
@@ -27,11 +27,10 @@ class ToolDiscoveryService:
 
         Args:
             tools_dir: Path to the directory containing tool modules.
-                      If None, tools will not be discoverable until set.
+                If None, tools will not be discoverable until set.
         """
         self._tools_dir: Path | None = tools_dir
         self._tools: dict[str, Callable[..., Any]] = {}
-        self._tool_groups: dict[str, list[str]] = {}
         self._tool_metadata: dict[str, dict[str, Any]] = {}
         self._loaded = False
 
@@ -46,7 +45,6 @@ class ToolDiscoveryService:
         self._tools_dir = value
         self._loaded = False
         self._tools.clear()
-        self._tool_groups.clear()
         self._tool_metadata.clear()
 
     def discover_tools(self) -> dict[str, Callable[..., Any]]:
@@ -59,130 +57,111 @@ class ToolDiscoveryService:
             return self._tools
 
         self._tools = {}
-        self._tool_groups = {}
         self._tool_metadata = {}
 
         if self._tools_dir is None or not self._tools_dir.exists():
             logger.warning(
-                f"Tools directory not set or does not exist: {self._tools_dir}"
+                "Tools directory not set or does not exist: %s",
+                self._tools_dir,
             )
             self._loaded = True
             return self._tools
 
         if not self._tools_dir.is_dir():
-            logger.warning(f"Tools path is not a directory: {self._tools_dir}")
+            logger.warning("Tools path is not a directory: %s", self._tools_dir)
             self._loaded = True
             return self._tools
 
-        logger.info(f"Discovering tools in: {self._tools_dir}")
+        logger.info("Discovering tools in: %s", self._tools_dir)
 
-        # Scan each subdirectory as a tool module
         for item in self._tools_dir.iterdir():
             if not item.is_dir():
                 continue
 
-            # Skip directories starting with underscore
             if item.name.startswith("_"):
                 continue
 
-            # Look for __init__.py in the subdirectory
             init_file = item / "__init__.py"
             if not init_file.exists():
-                logger.debug(f"Skipping {item.name}: no __init__.py found")
+                logger.debug("Skipping %s: no __init__.py found", item.name)
                 continue
 
-            # Load the module
             module_tools = self._load_tool_module(item, init_file)
             self._tools.update(module_tools)
 
-        logger.info(f"Discovered {len(self._tools)} tools: {list(self._tools.keys())}")
+        logger.info(
+            "Discovered %s tools: %s", len(self._tools), list(self._tools.keys())
+        )
         self._loaded = True
         return self._tools
 
     def _load_tool_module(
-        self, module_dir: Path, init_file: Path
+        self,
+        module_dir: Path,
+        init_file: Path,
     ) -> dict[str, Callable[..., Any]]:
         """Load a single tool module and extract tools.
 
         Args:
-            module_dir: Path to the module directory
-            init_file: Path to the module's __init__.py
+            module_dir: Path to the module directory.
+            init_file: Path to the module's __init__.py.
 
         Returns:
-            Dictionary mapping tool names to callable functions
+            Dictionary mapping tool names to callable functions.
         """
-        module_tools = {}
+        module_tools: dict[str, Callable[..., Any]] = {}
         module_name = module_dir.name
 
         try:
-            # Create a module spec and load the module
             spec = importlib.util.spec_from_file_location(
-                f"tools.{module_name}", init_file
+                f"tools.{module_name}",
+                init_file,
             )
             if spec is None or spec.loader is None:
-                logger.warning(f"Failed to create spec for {module_name}")
+                logger.warning("Failed to create spec for %s", module_name)
                 return module_tools
 
             module = importlib.util.module_from_spec(spec)
 
-            # Add the module directory to sys.path so it can import dependencies
             parent_dir = str(module_dir.parent)
             if parent_dir not in sys.path:
                 sys.path.insert(0, parent_dir)
 
             spec.loader.exec_module(module)
 
-            # Extract __all__ or use dir() to find exported symbols
             tool_names = getattr(module, "__all__", None)
             if tool_names is None:
-                # Fallback to all public symbols that don't start with _
                 tool_names = [
                     name
                     for name in dir(module)
                     if not name.startswith("_") and name not in ("typing", "pathlib")
                 ]
 
-            # Extract group from __dunder__ variable
-            group = getattr(module, "__group__", None)
-
-            # Validate and add each tool
             for name in tool_names:
                 if not hasattr(module, name):
                     continue
 
                 attr = getattr(module, name)
 
-                # Must be callable
                 if not callable(attr):
-                    logger.debug(f"Skipping {name}: not callable")
+                    logger.debug("Skipping %s: not callable", name)
                     continue
 
-                # Must have a docstring
                 if not attr.__doc__:
-                    logger.debug(f"Skipping {name}: no docstring")
+                    logger.debug("Skipping %s: no docstring", name)
                     continue
 
-                # Add to tools
                 module_tools[name] = attr
-
-                # Track metadata
                 self._tool_metadata[name] = {
                     "name": name,
                     "module": module_name,
-                    "group": group,
                     "docstring": attr.__doc__,
                 }
 
-                # Track group membership
-                if group:
-                    if group not in self._tool_groups:
-                        self._tool_groups[group] = []
-                    self._tool_groups[group].append(name)
+                logger.debug("Discovered tool: %s", name)
 
-                logger.debug(f"Discovered tool: {name} (group: {group})")
-
-        except Exception as e:
-            logger.error(f"Failed to load tool module {module_name}: {e}")
+        except Exception as exc:
+            logger.error("Failed to load tool module %s: %s", module_name, exc)
 
         return module_tools
 
@@ -222,16 +201,6 @@ class ToolDiscoveryService:
             self.discover_tools()
         return self._tool_metadata.get(name)
 
-    def get_tool_groups(self) -> dict[str, list[str]]:
-        """Get all tool groups and their members.
-
-        Returns:
-            Dictionary mapping group names to lists of tool names.
-        """
-        if not self._loaded:
-            self.discover_tools()
-        return self._tool_groups.copy()
-
     def get_all_tool_names(self) -> list[str]:
         """Get list of all discovered tool names.
 
@@ -246,6 +215,5 @@ class ToolDiscoveryService:
         """Force reload of tools from disk."""
         self._loaded = False
         self._tools.clear()
-        self._tool_groups.clear()
         self._tool_metadata.clear()
         self.discover_tools()

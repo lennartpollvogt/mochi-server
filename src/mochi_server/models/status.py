@@ -77,7 +77,7 @@ class SessionStatusResponse(BaseModel):
         description="List of active tool names",
     )
     execution_policy: str = Field(
-        description="Tool execution policy (always_confirm, never_confirm, auto)",
+        description="Default tool execution policy (always_confirm or never_confirm)",
     )
     agents_enabled: bool = Field(
         description="Whether agents are enabled for this session",

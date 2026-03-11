@@ -328,6 +328,17 @@ class ChatSession:
         metadata_dict = data["metadata"]
         summary_dict = metadata_dict.get("summary")
 
+        tool_settings_dict = metadata_dict.get("tool_settings", {}).copy()
+        if "tool_group" in tool_settings_dict:
+            tool_settings_dict.pop("tool_group", None)
+        if "tool_policies" not in tool_settings_dict:
+            tool_settings_dict["tool_policies"] = {}
+
+        stored_format_version = metadata_dict.get("format_version", "1.3")
+        format_version = (
+            "1.4" if stored_format_version != "1.4" else stored_format_version
+        )
+
         metadata = SessionMetadata(
             session_id=metadata_dict["session_id"],
             model=metadata_dict["model"],
@@ -343,8 +354,8 @@ class ChatSession:
                 else None
             ),
             summary_model=metadata_dict.get("summary_model"),
-            format_version=metadata_dict.get("format_version", "1.3"),
-            tool_settings=ToolSettings(**metadata_dict.get("tool_settings", {})),
+            format_version=format_version,
+            tool_settings=ToolSettings(**tool_settings_dict),
             agent_settings=AgentSettings(**metadata_dict.get("agent_settings", {})),
             context_window_config=ContextWindowConfig(
                 **metadata_dict.get("context_window_config", {})

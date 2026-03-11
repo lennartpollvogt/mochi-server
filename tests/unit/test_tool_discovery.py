@@ -1,6 +1,5 @@
 """Unit tests for ToolDiscoveryService."""
 
-
 import pytest
 
 from mochi_server.tools.discovery import ToolDiscoveryService
@@ -22,7 +21,6 @@ class TestToolDiscoveryService:
         math_init.write_text(
             '''
 __all__ = ["add_numbers", "multiply_numbers"]
-__group__ = "math"
 
 def add_numbers(a: int, b: int) -> int:
     """Add two numbers.
@@ -57,7 +55,6 @@ def multiply_numbers(a: int, b: int) -> int:
         util_init.write_text(
             '''
 __all__ = ["reverse_string"]
-__group__ = "utilities"
 
 def reverse_string(text: str) -> str:
     """Reverse a string.
@@ -109,7 +106,6 @@ def hidden_func() -> str:
         service = ToolDiscoveryService(tools_dir=sample_tools_path)
         tools = service.discover_tools()
 
-        # Should find tools from both subdirectories
         assert "add_numbers" in tools
         assert "multiply_numbers" in tools
         assert "reverse_string" in tools
@@ -120,7 +116,6 @@ def hidden_func() -> str:
         service = ToolDiscoveryService(tools_dir=sample_tools_path)
         tools = service.discover_tools()
 
-        # math_tools should have 2 tools
         assert callable(tools["add_numbers"])
         assert callable(tools["multiply_numbers"])
         assert callable(tools["reverse_string"])
@@ -132,7 +127,6 @@ def hidden_func() -> str:
         service = ToolDiscoveryService(tools_dir=sample_tools_path)
         tools = service.discover_tools()
 
-        # no_init_dir should not be discovered
         assert len(tools) == 3
         assert "no_init_dir" not in tools
 
@@ -141,7 +135,6 @@ def hidden_func() -> str:
         service = ToolDiscoveryService(tools_dir=sample_tools_path)
         tools = service.discover_tools()
 
-        # _hidden should not be discovered
         assert "hidden_func" not in tools
         assert len(tools) == 3
 
@@ -150,7 +143,6 @@ def hidden_func() -> str:
         tools_dir = tmp_path / "tools"
         tools_dir.mkdir()
 
-        # Create a file (not a directory)
         (tools_dir / "some_file.py").write_text("# some file")
 
         service = ToolDiscoveryService(tools_dir=tools_dir)
@@ -158,57 +150,10 @@ def hidden_func() -> str:
 
         assert tools == {}
 
-    # 1.3 Tool Groups
-
-    def test_discover_tools_extracts_groups(self, sample_tools_path):
-        """Verify __group__ variable is correctly extracted."""
-        service = ToolDiscoveryService(tools_dir=sample_tools_path)
-        service.discover_tools()
-
-        groups = service.get_tool_groups()
-
-        assert "math" in groups
-        assert "utilities" in groups
-
-    def test_discover_tools_multiple_groups(self, sample_tools_path):
-        """Verify multiple groups are tracked separately."""
-        service = ToolDiscoveryService(tools_dir=sample_tools_path)
-        service.discover_tools()
-
-        groups = service.get_tool_groups()
-
-        assert "add_numbers" in groups["math"]
-        assert "multiply_numbers" in groups["math"]
-        assert "reverse_string" in groups["utilities"]
-
-    def test_discover_tools_no_group(self, tmp_path):
-        """Tools without __group__ should not appear in groups."""
-        tools_dir = tmp_path / "tools"
-        tools_dir.mkdir()
-
-        no_group_dir = tools_dir / "no_group_tools"
-        no_group_dir.mkdir()
-        (no_group_dir / "__init__.py").write_text(
-            '''
-__all__ = ["some_func"]
-
-def some_func() -> str:
-    """A function without group."""
-    return "test"
-'''
-        )
-
-        service = ToolDiscoveryService(tools_dir=tools_dir)
-        service.discover_tools()
-
-        groups = service.get_tool_groups()
-        # Should have empty groups dict or not include no_group_tools
-        assert "no_group_tools" not in groups
-
-    # 1.4 Tool Metadata
+    # 1.3 Tool Metadata
 
     def test_get_tool_metadata(self, sample_tools_path):
-        """Verify metadata (name, module, group, docstring) is correct."""
+        """Verify metadata (name, module, docstring) is correct."""
         service = ToolDiscoveryService(tools_dir=sample_tools_path)
         service.discover_tools()
 
@@ -217,8 +162,8 @@ def some_func() -> str:
         assert metadata is not None
         assert metadata["name"] == "add_numbers"
         assert metadata["module"] == "math_tools"
-        assert metadata["group"] == "math"
         assert "Add two numbers" in metadata["docstring"]
+        assert "group" not in metadata
 
     def test_get_tool_metadata_not_found(self, sample_tools_path):
         """Verify None returned for non-existent tool."""
@@ -229,7 +174,7 @@ def some_func() -> str:
 
         assert metadata is None
 
-    # 1.5 Tool Retrieval
+    # 1.4 Tool Retrieval
 
     def test_get_tool(self, sample_tools_path):
         """Verify correct callable is returned."""
@@ -262,7 +207,7 @@ def some_func() -> str:
         assert "reverse_string" in names
         assert len(names) == 3
 
-    # 1.6 Reload Functionality
+    # 1.5 Reload Functionality
 
     def test_reload(self, sample_tools_path):
         """Verify reload clears and re-discovers tools."""
@@ -272,7 +217,6 @@ def some_func() -> str:
         initial_tools = service.get_all_tool_names()
         assert len(initial_tools) == 3
 
-        # Modify the tools directory
         new_dir = sample_tools_path / "new_tools"
         new_dir.mkdir()
         (new_dir / "__init__.py").write_text(
@@ -285,11 +229,9 @@ def new_tool() -> str:
 '''
         )
 
-        # Reload
         service.reload()
 
         reloaded_tools = service.get_all_tool_names()
-        # Should now include the new tool
         assert "new_tool" in reloaded_tools
         assert len(reloaded_tools) == 4
 
@@ -298,10 +240,8 @@ def new_tool() -> str:
         service = ToolDiscoveryService(tools_dir=None)
         assert service.get_all_tool_names() == []
 
-        # Set tools_dir
         service.tools_dir = sample_tools_path
 
-        # Should have discovered tools
         tools = service.get_all_tool_names()
         assert len(tools) == 3
 
@@ -323,3 +263,86 @@ def new_tool() -> str:
         tools = service.discover_tools()
 
         assert tools == {}
+
+    # 1.6 Export Validation
+
+    def test_discover_tools_skips_non_callable_exports(self, tmp_path):
+        """Non-callable names in __all__ should be skipped."""
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+
+        bad_dir = tools_dir / "bad_exports"
+        bad_dir.mkdir()
+        (bad_dir / "__init__.py").write_text(
+            '''
+__all__ = ["valid_tool", "not_a_function"]
+
+not_a_function = 42
+
+def valid_tool() -> str:
+    """A valid tool."""
+    return "ok"
+'''
+        )
+
+        service = ToolDiscoveryService(tools_dir=tools_dir)
+        tools = service.discover_tools()
+
+        assert "valid_tool" in tools
+        assert "not_a_function" not in tools
+
+    def test_discover_tools_skips_exports_without_docstring(self, tmp_path):
+        """Callable exports without docstrings should be skipped."""
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+
+        no_doc_dir = tools_dir / "no_doc_tools"
+        no_doc_dir.mkdir()
+        (no_doc_dir / "__init__.py").write_text(
+            '''
+__all__ = ["documented_tool", "undocumented_tool"]
+
+def documented_tool() -> str:
+    """A documented tool."""
+    return "ok"
+
+def undocumented_tool() -> str:
+    return "missing docstring"
+'''
+        )
+
+        service = ToolDiscoveryService(tools_dir=tools_dir)
+        tools = service.discover_tools()
+
+        assert "documented_tool" in tools
+        assert "undocumented_tool" not in tools
+
+    def test_discover_tools_falls_back_to_public_symbols_without_all(self, tmp_path):
+        """Public callables should be discovered when __all__ is missing."""
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+
+        fallback_dir = tools_dir / "fallback_tools"
+        fallback_dir.mkdir()
+        (fallback_dir / "__init__.py").write_text(
+            '''
+def public_tool() -> str:
+    """A public tool."""
+    return "public"
+
+def another_tool() -> str:
+    """Another public tool."""
+    return "another"
+
+def _private_tool() -> str:
+    """A private tool."""
+    return "private"
+'''
+        )
+
+        service = ToolDiscoveryService(tools_dir=tools_dir)
+        tools = service.discover_tools()
+
+        assert "public_tool" in tools
+        assert "another_tool" in tools
+        assert "_private_tool" not in tools

@@ -87,8 +87,8 @@ class ToolSettings:
     """Configuration for tool execution in a session."""
 
     tools: list[str] = field(default_factory=list)
-    tool_group: str | None = None
-    execution_policy: str = "always_confirm"  # always_confirm | never_confirm | auto
+    execution_policy: str = "always_confirm"  # always_confirm | never_confirm
+    tool_policies: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -120,7 +120,7 @@ class SessionMetadata:
     message_count: int = 0
     summary: ConversationSummary | None = None
     summary_model: str | None = None
-    format_version: str = "1.3"
+    format_version: str = "1.4"
     tool_settings: ToolSettings = field(default_factory=ToolSettings)
     agent_settings: AgentSettings = field(default_factory=AgentSettings)
     context_window_config: ContextWindowConfig = field(

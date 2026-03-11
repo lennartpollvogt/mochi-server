@@ -504,12 +504,17 @@ class ToolExecutionPolicy(str, Enum):
     NEVER_CONFIRM = "never_confirm"
 
 class ToolSettings:
-    tools: list[str]                          # Individual tool names
-    tool_group: str | None                    # Selected tool group
-    execution_policy: ToolExecutionPolicy
+    tools: list[str]                          # Explicitly enabled tool names
+    execution_policy: ToolExecutionPolicy     # Session-wide default policy
+    tool_policies: dict[str, ToolExecutionPolicy]  # Per-tool policy overrides
 ```
 
-**`tools` and `tool_group` interaction:** When both `tools` and `tool_group` are provided, the final set of tools exposed to the LLM is the **union** of individually named tools and all tools in the group, **deduplicated**. A `PATCH` request to update tool_settings fully replaces the previous tool_settings.
+**Policy resolution order:** The effective execution policy for a tool call is resolved in this order:
+1. `tool_policies[tool_name]` when present and valid
+2. `execution_policy` as the session-wide default
+3. Safe fallback to `always_confirm`
+
+A `PATCH` request to update `tool_settings` fully replaces the previous `tool_settings` object.
 
 ### 8.4 Agent Settings
 
@@ -647,8 +652,10 @@ All endpoints are prefixed with `/api/v1`.
   "system_prompt_source_file": "helpful.md",
   "tool_settings": {
     "tools": ["add_numbers", "get_current_time"],
-    "tool_group": null,
-    "execution_policy": "always_confirm"
+    "execution_policy": "always_confirm",
+    "tool_policies": {
+      "get_current_time": "never_confirm"
+    }
   },
   "agent_settings": {
     "enabled_agents": ["coder"]
@@ -705,8 +712,8 @@ All fields are optional. Only provided fields are updated.
   "model": "llama3:8b",
   "tool_settings": {
     "tools": ["add_numbers"],
-    "tool_group": null,
-    "execution_policy": "never_confirm"
+    "execution_policy": "never_confirm",
+    "tool_policies": {}
   },
   "agent_settings": {
     "enabled_agents": ["coder"]
@@ -864,7 +871,7 @@ data: {"session_id": "a1b2c3d4e5"}
 
 ### 9.5 Tool Confirmation Flow (Streaming)
 
-When the execution policy is `always_confirm`, tool calls require explicit approval:
+When the effective execution policy for a tool resolves to `always_confirm`, that tool call requires explicit approval:
 
 ```
 event: tool_call_confirmation_required
@@ -887,7 +894,7 @@ The client must then call:
 
 The stream remains open and waits until the client responds. There is no server-side timeout — the client is responsible for responding. If the client disconnects without responding, the tool call is treated as denied and the partial response is saved.
 
-For the `never_confirm` policy, tools execute immediately and `tool_call` + `tool_result` events are emitted without waiting.
+When the effective execution policy for a tool resolves to `never_confirm`, that tool executes immediately and `tool_call` + `tool_result` events are emitted without waiting.
 
 ---
 
@@ -895,7 +902,7 @@ For the `never_confirm` policy, tools execute immediately and `tool_call` + `too
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/tools` | List all discovered tools and tool groups |
+| `GET` | `/api/v1/tools` | List all discovered tools |
 | `GET` | `/api/v1/tools/{tool_name}` | Get details for a specific tool (schema, description) |
 | `POST` | `/api/v1/tools/reload` | Force reload tools from disk |
 
@@ -911,10 +918,6 @@ For the `never_confirm` policy, tools execute immediately and `tool_call` + `too
         "b": {"type": "float", "description": "The second number to add."}
       }
     }
-  },
-  "groups": {
-    "math": ["add_numbers", "subtract_numbers", "multiply_numbers", "divide_numbers"],
-    "utilities": ["get_current_time", "flip_coin", "roll_dice"]
   }
 }
 ```
@@ -1321,8 +1324,12 @@ The JSON schema is as follows:
     "message_count": 6,
     "summary": {"summary": "...", "topics": ["..."]},
     "summary_model": "qwen3:14b",
-    "format_version": "1.3",
-    "tool_settings": {"tools": [], "tool_group": null, "execution_policy": "always_confirm"},
+    "format_version": "1.4",
+    "tool_settings": {
+      "tools": [],
+      "execution_policy": "always_confirm",
+      "tool_policies": {}
+    },
     "agent_settings": {"enabled_agents": []},
     "context_window_config": {
       "dynamic_enabled": true,
@@ -1352,6 +1359,7 @@ When format changes occur in future versions, the session loader must handle mig
 - **1.0 → 1.1:** Add `tool_settings` field
 - **1.1 → 1.2:** Add `context_window_config` field
 - **1.2 → 1.3:** Add `agent_settings` field
+- **1.3 → 1.4:** Remove legacy `tool_group`, add `tool_policies`, preserve `execution_policy`
 
 Migration logic should:
 1. Detect the format version from loaded JSON
@@ -1389,9 +1397,10 @@ The tool system allows users to define Python functions that LLMs can invoke dur
 
 ```
 {tools_dir}/
-├── __init__.py          # Exports tools via __all__, defines groups
-├── math_tools.py        # Module with math tool functions
-├── utility_tools.py     # Module with utility tool functions
+├── math_tools/          # Tool module directory
+│   └── __init__.py      # Exports tool callables via __all__
+├── utility_tools/       # Tool module directory
+│   └── __init__.py      # Exports tool callables via __all__
 └── ...
 ```
 
@@ -1402,37 +1411,32 @@ Every tool function must:
 2. Have a **docstring** (used for schema generation and description)
 3. Return a **string** (for LLM consumption)
 
-### 13.4 Tool Groups
+### 13.4 Tool Discovery Service
 
-Groups are defined in `__init__.py` using double-underscore variables:
-
-```python
-__math__ = ["add_numbers", "subtract_numbers", "multiply_numbers"]
-__utilities__ = ["get_current_time", "flip_coin"]
-```
-
-### 13.5 Tool Discovery Service
-
-- Scans `tools_dir/__init__.py` for `__all__` exports
+- Scans each immediate subdirectory of `tools_dir`
+- Loads each subdirectory's `__init__.py`
+- Reads exported tool names from `__all__` (or falls back to public callables)
 - Validates each function (has docstring, is callable)
-- Extracts tool groups from `__dunder__` variables
 - Caches results (with `reload_tools()` to force re-discovery)
 
-### 13.6 Tool Schema Service
+### 13.5 Tool Schema Service
 
 - Converts Python functions to Ollama `Tool` objects using `ollama._utils.convert_function_to_tool`
 - Caches converted schemas (keyed on `name + id(func)`)
 - Extracts descriptions from docstrings using `ollama._utils._parse_docstring`
 
-### 13.7 Tool Execution Service
+### 13.6 Tool Execution Service
 
 - Executes tool functions with the provided arguments
-- Respects execution policy (always_confirm, never_confirm)
+- Resolves the effective execution policy per tool call using:
+  1. `tool_policies[tool_name]`
+  2. session `execution_policy`
+  3. safe fallback to `always_confirm`
 - Returns `ToolExecutionResult(success, result, error_message, execution_time, tool_name)`
 - Maintains execution history (last 100 executions)
 - Provides execution statistics
 
-### 13.8 Tool Execution in Chat Flow
+### 13.7 Tool Execution in Chat Flow
 
 When the LLM returns `tool_calls` in its response:
 

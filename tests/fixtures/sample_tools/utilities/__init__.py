@@ -5,8 +5,6 @@ This module contains utility tool functions for testing.
 
 __all__ = ["reverse_string", "string_length"]
 
-__group__ = "utilities"
-
 
 def reverse_string(text: str) -> str:
     """Reverse a string.

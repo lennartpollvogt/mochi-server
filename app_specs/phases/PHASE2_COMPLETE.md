@@ -141,8 +141,8 @@ Response:
   "message_count": 1,
   "tool_settings": {
     "tools": ["calculator"],
-    "tool_group": null,
-    "execution_policy": "always_confirm"
+    "execution_policy": "always_confirm",
+    "tool_policies": {}
   },
   "agent_settings": {
     "enabled_agents": []
@@ -189,8 +189,8 @@ Response:
   "message_count": 2,
   "tool_settings": {
     "tools": [],
-    "tool_group": null,
-    "execution_policy": "always_confirm"
+    "execution_policy": "always_confirm",
+    "tool_policies": {}
   },
   "agent_settings": {
     "enabled_agents": []
@@ -249,11 +249,11 @@ Sessions are stored as JSON files in `{data_dir}/chat_sessions/{session_id}.json
     "message_count": 3,
     "summary": null,
     "summary_model": null,
-    "format_version": "1.3",
+    "format_version": "1.4",
     "tool_settings": {
       "tools": [],
-      "tool_group": null,
-      "execution_policy": "always_confirm"
+      "execution_policy": "always_confirm",
+      "tool_policies": {}
     },
     "agent_settings": {
       "enabled_agents": []
