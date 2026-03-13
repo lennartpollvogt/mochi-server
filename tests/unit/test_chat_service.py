@@ -154,13 +154,14 @@ class TestStreamingResponseCollection:
         mock_client.chat_stream = mock_stream
 
         # Collect the response
-        content, final_chunk = await _collect_streaming_response(
+        content, thinking, final_chunk = await _collect_streaming_response(
             mock_client,
             model="llama3.2:latest",
             messages=[{"role": "user", "content": "Hi"}],
         )
 
         assert content == "Hello there!"
+        assert thinking == ""
         assert final_chunk["done"] is True
         assert final_chunk["eval_count"] == 10
         assert final_chunk["prompt_eval_count"] == 50
@@ -195,13 +196,14 @@ class TestStreamingResponseCollection:
 
         mock_client.chat_stream = mock_stream
 
-        content, final_chunk = await _collect_streaming_response(
+        content, thinking, final_chunk = await _collect_streaming_response(
             mock_client,
             model="llama3.2:latest",
             messages=[{"role": "user", "content": "Hi"}],
         )
 
         assert content == "OK"
+        assert thinking == ""
         assert final_chunk["done"] is True
 
     @pytest.mark.asyncio
@@ -258,3 +260,52 @@ class TestStreamingResponseCollection:
 
         assert exc_info.value.status_code == 502
         assert "incomplete_response" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_collect_response_with_thinking_and_think_passthrough(self):
+        """Test collecting thinking content and passing think=True to Ollama."""
+        chunks = [
+            {
+                "model": "llama3.2:latest",
+                "message": {
+                    "role": "assistant",
+                    "thinking": "Let me reason this out. ",
+                    "content": "",
+                },
+                "done": False,
+            },
+            {
+                "model": "llama3.2:latest",
+                "message": {
+                    "role": "assistant",
+                    "thinking": "Final step.",
+                    "content": "Answer.",
+                },
+                "done": True,
+                "eval_count": 7,
+                "prompt_eval_count": 21,
+            },
+        ]
+
+        captured_kwargs = {}
+
+        mock_client = AsyncMock()
+
+        async def mock_stream(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            for chunk in chunks:
+                yield chunk
+
+        mock_client.chat_stream = mock_stream
+
+        content, thinking, final_chunk = await _collect_streaming_response(
+            mock_client,
+            model="llama3.2:latest",
+            messages=[{"role": "user", "content": "Complex question"}],
+            think=True,
+        )
+
+        assert content == "Answer."
+        assert thinking == "Let me reason this out. Final step."
+        assert final_chunk["done"] is True
+        assert captured_kwargs["think"] is True

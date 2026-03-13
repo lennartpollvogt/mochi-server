@@ -58,6 +58,10 @@ class MessageResponse(BaseModel):
 
     role: str = Field(description="Message role (assistant)")
     content: str = Field(description="Message content")
+    thinking: str | None = Field(
+        default=None,
+        description="Model thinking/reasoning text (if requested and supported)",
+    )
     model: str = Field(description="Model that generated this message")
     message_id: str = Field(description="Unique message identifier")
     timestamp: str = Field(description="ISO 8601 timestamp")
@@ -111,6 +115,7 @@ class ChatResponse(BaseModel):
                 "message": {
                     "role": "assistant",
                     "content": "The capital of France is Paris.",
+                    "thinking": "I should answer directly with the capital city.",
                     "model": "llama3.2:latest",
                     "message_id": "f1e2d3c4b5",
                     "timestamp": "2025-01-15T10:35:00.000000Z",

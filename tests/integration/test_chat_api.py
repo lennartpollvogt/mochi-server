@@ -4,10 +4,8 @@ Tests the POST /api/v1/chat/{session_id} endpoint with a full app setup,
 including session creation, message handling, and error cases.
 """
 
-
 import pytest
 from httpx import AsyncClient
-
 
 
 class TestChatNonStreaming:
@@ -283,7 +281,7 @@ class TestChatNonStreaming:
     async def test_chat_with_think_parameter(
         self, async_client: AsyncClient, test_settings, mock_ollama_client
     ):
-        """Test chat with think parameter (for future Phase support)."""
+        """Test chat with think parameter passthrough and persisted thinking."""
         # Create session
         response = await async_client.post(
             "/api/v1/sessions",
@@ -291,23 +289,34 @@ class TestChatNonStreaming:
         )
         session_id = response.json()["session_id"]
 
-        # Mock response
+        # Mock response with thinking + content chunks
         chunks = [
             {
                 "model": "llama3.2:latest",
-                "message": {"role": "assistant", "content": "Thinking..."},
+                "message": {
+                    "role": "assistant",
+                    "thinking": "Let me think. ",
+                    "content": "",
+                },
                 "done": False,
             },
             {
                 "model": "llama3.2:latest",
-                "message": {"role": "assistant", "content": ""},
+                "message": {
+                    "role": "assistant",
+                    "thinking": "Final step.",
+                    "content": "Final answer.",
+                },
                 "done": True,
                 "eval_count": 5,
                 "prompt_eval_count": 20,
             },
         ]
 
+        captured_kwargs = {}
+
         async def mock_stream(*args, **kwargs):
+            captured_kwargs.update(kwargs)
             for chunk in chunks:
                 yield chunk
 
@@ -320,8 +329,21 @@ class TestChatNonStreaming:
         )
 
         assert response.status_code == 200
-        # In Phase 3, think parameter is accepted but not processed
-        assert "message" in response.json()
+        data = response.json()
+        assert "message" in data
+        assert data["message"]["content"] == "Final answer."
+        assert data["message"]["thinking"] == "Let me think. Final step."
+        assert captured_kwargs["think"] is True
+
+        # Verify thinking is persisted in session messages
+        messages_response = await async_client.get(
+            f"/api/v1/sessions/{session_id}/messages"
+        )
+        assert messages_response.status_code == 200
+        messages = messages_response.json()["messages"]
+        assert len(messages) == 2  # user + assistant
+        assert messages[1]["role"] == "assistant"
+        assert messages[1]["thinking"] == "Let me think. Final step."
 
     @pytest.mark.asyncio
     async def test_chat_multiple_turns(

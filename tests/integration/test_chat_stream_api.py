@@ -232,6 +232,100 @@ async def test_stream_chat_ollama_error(async_client: AsyncClient, mock_ollama_c
 
 
 @pytest.mark.asyncio
+async def test_stream_chat_with_think_parameter(
+    async_client: AsyncClient, mock_ollama_client
+):
+    """Test streaming chat think passthrough and thinking persistence."""
+    # Create a session
+    create_response = await async_client.post(
+        "/api/v1/sessions",
+        json={"model": "llama3.2:latest"},
+    )
+    assert create_response.status_code == 201
+    session_id = create_response.json()["session_id"]
+
+    # Mock streaming response with thinking + content
+    chunks = [
+        {
+            "model": "llama3.2:latest",
+            "message": {
+                "role": "assistant",
+                "thinking": "First thought. ",
+                "content": "",
+            },
+            "done": False,
+        },
+        {
+            "model": "llama3.2:latest",
+            "message": {
+                "role": "assistant",
+                "thinking": "Second thought.",
+                "content": "Final streamed answer.",
+            },
+            "done": True,
+            "eval_count": 6,
+            "prompt_eval_count": 22,
+        },
+    ]
+
+    captured_kwargs = {}
+
+    async def mock_chat_stream(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        for chunk in chunks:
+            yield chunk
+
+    mock_ollama_client.chat_stream = mock_chat_stream
+
+    # Stream a message with think=true
+    response = await async_client.post(
+        f"/api/v1/chat/{session_id}/stream",
+        json={"message": "Solve this carefully", "think": True},
+    )
+    assert response.status_code == 200
+    assert captured_kwargs["think"] is True
+
+    # Parse SSE events
+    events = []
+    normalized_text = response.text.replace("\r\n", "\n")
+    raw_chunks = normalized_text.strip().split("\n\n")
+    for line in raw_chunks:
+        if line.strip():
+            event_type = None
+            event_data = None
+            for part in line.split("\n"):
+                if part.startswith("event:"):
+                    event_type = part.split(":", 1)[1].strip()
+                elif part.startswith("data:"):
+                    event_data = part.split(":", 1)[1].strip()
+            if event_type and event_data:
+                events.append({"event": event_type, "data": json.loads(event_data)})
+
+    thinking_events = [e for e in events if e["event"] == "thinking_delta"]
+    assert len(thinking_events) == 2
+    assert thinking_events[0]["data"]["content"] == "First thought. "
+    assert thinking_events[1]["data"]["content"] == "Second thought."
+
+    content_events = [e for e in events if e["event"] == "content_delta"]
+    assert len(content_events) == 1
+    assert content_events[0]["data"]["content"] == "Final streamed answer."
+
+    done_events = [e for e in events if e["event"] == "done"]
+    assert len(done_events) == 1
+    assert done_events[0]["data"]["session_id"] == session_id
+
+    # Verify assistant message persisted with thinking
+    session_response = await async_client.get(f"/api/v1/sessions/{session_id}")
+    assert session_response.status_code == 200
+    session_data = session_response.json()
+    messages = session_data["messages"]
+    assert len(messages) == 2  # user + assistant
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == "Final streamed answer."
+    assert messages[-1]["thinking"] == "First thought. Second thought."
+
+
+@pytest.mark.asyncio
 async def test_stream_chat_with_system_prompt(
     async_client: AsyncClient, mock_ollama_client
 ):
