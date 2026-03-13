@@ -83,7 +83,8 @@ async def _collect_streaming_response(
     messages: list[dict],
     options: dict | None = None,
     tools: list[dict] | None = None,
-) -> tuple[str, dict]:
+    think: bool = False,
+) -> tuple[str, str, dict]:
     """Collect a complete response from Ollama's streaming API.
 
     Args:
@@ -92,14 +93,16 @@ async def _collect_streaming_response(
         messages: Messages in Ollama format
         options: Optional model parameters (e.g., num_ctx for context window)
         tools: Optional tool schemas to expose to the model
+        think: Whether to request model thinking/reasoning output
 
     Returns:
-        Tuple of (complete_content, final_chunk_metadata)
+        Tuple of (complete_content, complete_thinking, final_chunk_metadata)
 
     Raises:
         HTTPException: If streaming fails
     """
     content_parts = []
+    thinking_parts = []
     final_chunk = None
 
     try:
@@ -108,12 +111,16 @@ async def _collect_streaming_response(
             messages=messages,
             options=options,
             tools=tools,
+            think=think,
         ):
-            # Accumulate content
+            # Accumulate content and thinking
             message = chunk.get("message", {})
             content = message.get("content", "")
+            thinking = message.get("thinking", "")
             if content:
                 content_parts.append(content)
+            if thinking:
+                thinking_parts.append(thinking)
 
             # Keep the final chunk for metadata
             if chunk.get("done"):
@@ -145,7 +152,8 @@ async def _collect_streaming_response(
         )
 
     complete_content = "".join(content_parts)
-    return complete_content, final_chunk
+    complete_thinking = "".join(thinking_parts)
+    return complete_content, complete_thinking, final_chunk
 
 
 def _build_active_tool_schemas(
@@ -169,10 +177,12 @@ def _create_assistant_message(
     final_chunk: dict | None,
     tool_calls: list[dict] | None,
     message_id: str | None = None,
+    thinking: str | None = None,
 ) -> AssistantMessage:
     """Create an assistant message from Ollama response data."""
     return AssistantMessage(
         content=content,
+        thinking=thinking,
         model=session.model,
         message_id=message_id or uuid.uuid4().hex[:10],
         timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -190,18 +200,20 @@ async def _run_non_streaming_tool_flow(
     ollama_messages: list[dict],
     ollama_options: dict | None,
     tools: list[dict] | None,
+    think: bool = False,
 ) -> tuple[AssistantMessage, list[dict]]:
     """Execute the full non-streaming chat flow including tool calls."""
     tool_calls_executed = []
     execution_service = get_tool_execution_service(request)
 
     while True:
-        content, final_chunk = await _collect_streaming_response(
+        content, thinking, final_chunk = await _collect_streaming_response(
             ollama_client=ollama_client,
             model=session.model,
             messages=ollama_messages,
             options=ollama_options,
             tools=tools,
+            think=think,
         )
 
         message = final_chunk.get("message", {}) if final_chunk else {}
@@ -212,6 +224,7 @@ async def _run_non_streaming_tool_flow(
             content=content,
             final_chunk=final_chunk,
             tool_calls=assistant_tool_calls,
+            thinking=thinking or None,
         )
         session.add_message(assistant_message)
         ollama_messages.append(
@@ -422,6 +435,7 @@ async def chat_non_streaming(
         ollama_messages=ollama_messages,
         ollama_options=ollama_options,
         tools=tools,
+        think=request_body.think,
     )
 
     logger.info(
@@ -488,6 +502,7 @@ async def chat_non_streaming(
     message_response = MessageResponse(
         role=assistant_message.role,
         content=assistant_message.content,
+        thinking=assistant_message.thinking,
         model=assistant_message.model,
         message_id=assistant_message.message_id,
         timestamp=assistant_message.timestamp,
@@ -678,6 +693,7 @@ async def chat_streaming(
                     messages=ollama_messages,
                     options=ollama_options,
                     tools=tools,
+                    think=request_body.think,
                 ):
                     # Check if client disconnected
                     if await request.is_disconnected():
@@ -724,12 +740,14 @@ async def chat_streaming(
                         assistant_tool_calls = message["tool_calls"]
 
                 complete_content = "".join(content_parts)
+                complete_thinking = "".join(thinking_parts)
                 assistant_message = _create_assistant_message(
                     session=session,
                     content=complete_content,
                     final_chunk=final_chunk,
                     tool_calls=assistant_tool_calls,
                     message_id=message_id,
+                    thinking=complete_thinking or None,
                 )
                 session.add_message(assistant_message)
                 ollama_messages.append(

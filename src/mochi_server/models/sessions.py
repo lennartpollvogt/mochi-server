@@ -130,6 +130,7 @@ class MessageResponse(BaseModel):
 
     role: str
     content: str
+    thinking: str | None = None
     message_id: str | None = None
     timestamp: str | None = None
     model: str | None = None

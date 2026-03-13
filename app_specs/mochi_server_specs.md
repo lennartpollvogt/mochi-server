@@ -799,6 +799,7 @@ The non-streaming endpoint collects the full streamed response from Ollama befor
   "message": {
     "role": "assistant",
     "content": "The capital of France is Paris.",
+    "thinking": "",
     "model": "qwen3:14b",
     "message_id": "f1e2d3c4b5",
     "timestamp": "2025-01-15T10:35:00.000000",

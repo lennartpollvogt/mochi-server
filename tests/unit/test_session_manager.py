@@ -59,7 +59,7 @@ async def test_create_session(sessions_dir: Path, mock_ollama_client):
     assert len(session.session_id) == 10
     assert session.model == "llama3:8b"
     assert session.metadata.message_count == 0
-    assert session.metadata.format_version == "1.3"
+    assert session.metadata.format_version == "1.4"
 
     # Verify it was saved to disk
     session_file = sessions_dir / f"{session.session_id}.json"

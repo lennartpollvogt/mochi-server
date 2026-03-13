@@ -33,7 +33,7 @@ def test_create_new_session():
     assert session.metadata.session_id == "test123"
     assert session.metadata.model == "llama3:8b"
     assert session.metadata.message_count == 0
-    assert session.metadata.format_version == "1.3"
+    assert session.metadata.format_version == "1.4"
 
 
 def test_create_session_with_messages():
@@ -378,6 +378,7 @@ def test_session_with_all_message_types(tmp_path: Path):
     session.add_message(
         AssistantMessage(
             content="Hi!",
+            thinking="Reasoning trace",
             model="llama3:8b",
             message_id="msg3",
             timestamp=now,
@@ -406,6 +407,7 @@ def test_session_with_all_message_types(tmp_path: Path):
     assert isinstance(loaded.messages[3], ToolMessage)
     assert loaded.messages[0].source_file == "helpful.md"
     assert loaded.messages[2].eval_count == 10
+    assert loaded.messages[2].thinking == "Reasoning trace"
     assert loaded.messages[3].tool_name == "test_tool"
 
 

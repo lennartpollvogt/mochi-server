@@ -181,6 +181,7 @@ class OllamaClient:
         messages: list[dict[str, Any]],
         options: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        think: bool | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream chat responses from Ollama.
 
@@ -193,6 +194,8 @@ class OllamaClient:
             messages: List of message dicts in Ollama format:
                       [{"role": "user", "content": "..."}, ...]
             options: Optional model parameters (temperature, etc.)
+            tools: Optional tool schemas to expose to the model
+            think: Optional reasoning/thinking flag to forward to Ollama
 
         Yields:
             dict: Response chunks from Ollama. Each chunk contains:
@@ -218,13 +221,17 @@ class OllamaClient:
             logger.debug(f"Message count: {len(messages)}")
 
             # Call Ollama's async chat API with streaming
-            async for chunk in await self._client.chat(
-                model=model,
-                messages=messages,
-                stream=True,
-                options=options,
-                tools=tools,
-            ):
+            chat_kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "options": options,
+                "tools": tools,
+            }
+            if think is not None:
+                chat_kwargs["think"] = think
+
+            async for chunk in await self._client.chat(**chat_kwargs):
                 # Convert the chunk to a dict if it's not already
                 if hasattr(chunk, "model_dump"):
                     chunk_dict = chunk.model_dump()

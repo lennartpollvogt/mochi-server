@@ -48,6 +48,7 @@ class AssistantMessage:
     timestamp: str = ""
     eval_count: int | None = None
     prompt_eval_count: int | None = None
+    thinking: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
